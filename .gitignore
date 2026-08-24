@@ -1,0 +1,22 @@
+# Virtual environment
+hurricane-env/
+.venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Data files (optional but recommended)
+data/raw/
+data/processed/
+*.parquet
+*.csv
+
+# Model artifacts (optional)
+artifacts/
+*.joblib
+*.pkl

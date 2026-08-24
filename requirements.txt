@@ -1,0 +1,14 @@
+pandas
+numpy
+scikit-learn
+xgboost
+shap
+matplotlib
+seaborn
+flask
+jupyter
+pyyaml
+joblib
+tqdm
+python-dotenv
+pyarrow
