@@ -2,21 +2,20 @@
 hurricane-env/
 .venv/
 venv/
-env/
+
+# Data (do not track)
+data/
+*.txt
+*.csv
+*.parquet
 
 # Python cache
 __pycache__/
+*.pyc
 *.py[cod]
-*.egg-info/
 .pytest_cache/
 
-# Data files (optional but recommended)
-data/raw/
-data/processed/
-*.parquet
-*.csv
-
-# Model artifacts (optional)
+# Model artifacts
 artifacts/
 *.joblib
 *.pkl
