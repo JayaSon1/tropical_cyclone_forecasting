@@ -2,6 +2,10 @@ from pathlib import Path
 import pytest
 from datetime import datetime
 import pandas as pd
+import sys
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.append(str(PROJECT_ROOT))
 
 from data.parse_hurdat2 import parse_hurdat2   
 
@@ -25,6 +29,27 @@ def test_full_hurdat2_parsing():
     assert df["storm_id"].str.startswith("AL").all(), "All Atlantic storm_ids should start with AL"
     assert df["storm_id"].nunique() > 1500, "Expected >1500 unique storms since 1851"
 
+    # Produces multiple unique storm_ids
+    n_storms = df["storm_id"].nunique()
+    print(f"Unique storms found: {n_storms:,}")
+    
+    assert n_storms > 1500, f"Expected >1500 unique storms in the full Atlantic record, got {n_storms}"
+
+    # All IDs should look like Atlantic storm IDs
+    assert df["storm_id"].str.startswith("AL").all(), "Some storm_ids do not start with 'AL'"
+
+    # No completely empty storms
+    storm_sizes = df.groupby("storm_id").size()
+    
+    assert (storm_sizes > 0).all(), "Found storm(s) with zero records"
+    
+    # Every storm should have at least a few points
+    min_size = storm_sizes.min()
+    print(f"Smallest storm has {min_size} records")
+    
+    assert min_size >= 1, f"Found a storm with only {min_size} records"
+    
+    
     # Time ordering 
     # Within each storm the times must be sorted
     assert df.groupby("storm_id")["datetime"].is_monotonic_increasing.all(), \
