@@ -20,6 +20,18 @@ import pandas as pd
 from pathlib import Path
 from datetime import datetime
 
+# Convert HURDAT2 numeric field, treating common missing codes as None
+def handle_none(value: str):
+    
+    value = value.strip()
+    
+    if value in ("", "-99", "-999", " "):
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
 
 def parse_hurdat2(filepath):
     
@@ -88,6 +100,9 @@ def parse_hurdat2(filepath):
             # Convert date 
             date = datetime.strptime(date_str + time_str, "%Y%m%d%H%M")
                           
+            # Handle none code
+            vmax = handle_none(parts[6])
+            mslp = handle_none(parts[7])
                             
             # Append data entry
             rows.append({

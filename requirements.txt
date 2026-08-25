@@ -12,3 +12,4 @@ joblib
 tqdm
 python-dotenv
 pyarrow
+pytest
