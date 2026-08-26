@@ -1,0 +1,52 @@
+{
+  "model": "xgb_ri_v1",
+  "split": {
+    "train_max_year": 2015,
+    "val_years": "2016-2019",
+    "test_min_year": 2020
+  },
+  "n_train": 11459,
+  "n_val": 1283,
+  "n_test": 1786,
+  "ri_rate_train": 0.05803298717165547,
+  "ri_rate_val": 0.06858924395947,
+  "ri_rate_test": 0.06438969764837627,
+  "scale_pos_weight": 16.231578947368423,
+  "pr_auc_test": 0.3759516585222119,
+  "pr_auc_majority": 0.06438969764837627,
+  "pr_auc_persistence": 0.12890723479060512,
+  "thresholds": {
+    "0.1": {
+      "precision": 0.07438551099611902,
+      "recall": 1.0,
+      "n_predicted_positive": 1546
+    },
+    "0.2": {
+      "precision": 0.092,
+      "recall": 1.0,
+      "n_predicted_positive": 1250
+    },
+    "0.3": {
+      "precision": 0.1168421052631579,
+      "recall": 0.9652173913043478,
+      "n_predicted_positive": 950
+    },
+    "0.5": {
+      "precision": 0.17343173431734318,
+      "recall": 0.8173913043478261,
+      "n_predicted_positive": 542
+    }
+  },
+  "features": [
+    "vmax",
+    "mslp",
+    "delta_vmax_6h",
+    "delta_vmax_12h",
+    "latitude",
+    "longitude",
+    "translation_speed",
+    "storm_age_hours",
+    "month",
+    "day_of_year"
+  ]
+}
