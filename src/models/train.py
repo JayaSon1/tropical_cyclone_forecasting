@@ -7,9 +7,15 @@ from pathlib import Path
 from sklearn.calibration import calibration_curve
 import matplotlib.pyplot as plt
 import json
+import sys
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import average_precision_score, brier_score_loss
 from sklearn.calibration import calibration_curve
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+sys.path.append(str(PROJECT_ROOT))
+
+from explainability.compute_shap import explain
 
 if __name__ == "__main__":
     
@@ -163,6 +169,10 @@ if __name__ == "__main__":
     print("Brier raw / Platt:",
         brier_score_loss(y_test, test_prob.ravel()),
         brier_score_loss(y_test, test_cal))
+    
+    # Save Platt calibrator
+    joblib.dump(platt, "artifacts/platt_calibrator_v1.joblib")
+    joblib.dump(feature_cols, "artifacts/feature_cols_v1.joblib")
 
     # Plot calibration curve
     prob_true, prob_pred = calibration_curve(y_test, test_cal, n_bins=10, strategy="quantile")
@@ -215,3 +225,6 @@ if __name__ == "__main__":
         json.dump(results, f, indent=2)
 
     print("Saved artifacts/metrics_v1.json")
+    
+    # Compute SHAP
+    explain(model, X_test, feature_cols)
