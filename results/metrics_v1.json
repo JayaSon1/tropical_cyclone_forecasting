@@ -12,29 +12,29 @@
   "ri_rate_val": 0.06858924395947,
   "ri_rate_test": 0.06438969764837627,
   "scale_pos_weight": 16.231578947368423,
-  "pr_auc_test": 0.3759516585222119,
+  "pr_auc_test": 0.38545263568634536,
   "pr_auc_majority": 0.06438969764837627,
   "pr_auc_persistence": 0.12890723479060512,
   "thresholds": {
     "0.1": {
-      "precision": 0.07438551099611902,
+      "precision": 0.08443465491923642,
       "recall": 1.0,
-      "n_predicted_positive": 1546
+      "n_predicted_positive": 1362
     },
     "0.2": {
-      "precision": 0.092,
-      "recall": 1.0,
-      "n_predicted_positive": 1250
+      "precision": 0.1049671977507029,
+      "recall": 0.9739130434782609,
+      "n_predicted_positive": 1067
     },
     "0.3": {
-      "precision": 0.1168421052631579,
-      "recall": 0.9652173913043478,
-      "n_predicted_positive": 950
+      "precision": 0.1303827751196172,
+      "recall": 0.9478260869565217,
+      "n_predicted_positive": 836
     },
     "0.5": {
-      "precision": 0.17343173431734318,
-      "recall": 0.8173913043478261,
-      "n_predicted_positive": 542
+      "precision": 0.17755102040816326,
+      "recall": 0.7565217391304347,
+      "n_predicted_positive": 490
     }
   },
   "features": [
@@ -46,7 +46,6 @@
     "longitude",
     "translation_speed",
     "storm_age_hours",
-    "month",
-    "day_of_year"
+    "month"
   ]
 }

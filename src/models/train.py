@@ -7,13 +7,15 @@ from pathlib import Path
 from sklearn.calibration import calibration_curve
 import matplotlib.pyplot as plt
 import json
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import average_precision_score, brier_score_loss
+from sklearn.calibration import calibration_curve
 
 if __name__ == "__main__":
     
     # Load the processed data
     print("Loading data...")
     df = pd.read_parquet("data/processed/hurdat2_processed_observations.parquet")
-    df["year"] = pd.to_datetime(df["datetime"]).dt.year
 
     feature_cols = [
         "vmax", "mslp",
@@ -21,15 +23,34 @@ if __name__ == "__main__":
         "latitude", "longitude",
         "translation_speed",
         "storm_age_hours",
-        "month", "day_of_year",
+        "month",
     ]
     
-    # Create a temporal split
+    # Create a temporal 
+    # One year per storm = year of first observation (genesis)
+    storm_year = (
+        df.groupby("storm_id")["datetime"]
+        .min()
+        .dt.year
+        .rename("storm_year")
+    )
+
+    df = df.merge(storm_year, left_on="storm_id", right_index=True)
+
     print("Creating temporal split...")
-    training_set = df[df["year"] <= 2015]
-    validation_set = df[(df["year"] >= 2016) & (df["year"] <= 2019)]
-    test_set = df[df["year"] >= 2020]
+    training_set = df[df["storm_year"] <= 2015]
+    validation_set = df[(df["storm_year"] >= 2016) & (df["storm_year"] <= 2019)]
+    test_set = df[df["storm_year"] >= 2020]
     
+    # Check that there are no storms that overlap in the training, validation and testing sets
+    train_ids = set(training_set["storm_id"])
+    val_ids   = set(validation_set["storm_id"])
+    test_ids  = set(test_set["storm_id"])
+
+    print("Train ∩ Val :", len(train_ids & val_ids))   # must be 0
+    print("Train ∩ Test:", len(train_ids & test_ids))  # must be 0
+    print("Val ∩ Test  :", len(val_ids & test_ids))    # must be 0
+        
     print(f"Training: {len(training_set)} | Validation: {len(validation_set)} | Test: {len(test_set)}")
     print("Training RI rate:", training_set["RI"].mean().round(3))
     print("Validation RI rate:", validation_set["RI"].mean().round(3))
@@ -124,8 +145,27 @@ if __name__ == "__main__":
     print(f"Persistence PR-AUC: {pr_auc_persist:.4f}")
     print(f"XGBoost PR-AUC: {pr_auc:.4f}")
             
+    # Calibration
+    # The imabalance scale factor usually pushes scores in a smooth way so Platt scaling can fix this
+    validation_prob  = model.predict_proba(X_validation)[:, 1].reshape(-1, 1)
+    test_prob = model.predict_proba(X_test)[:, 1].reshape(-1, 1)
+
+    platt = LogisticRegression()
+    platt.fit(validation_prob, y_validation)
+
+    val_cal  = platt.predict_proba(validation_prob)[:, 1]
+    test_cal = platt.predict_proba(test_prob)[:, 1]
+
+    print("PR-AUC raw / Platt:",
+        average_precision_score(y_test, test_prob),
+        average_precision_score(y_test, test_cal))
+
+    print("Brier raw / Platt:",
+        brier_score_loss(y_test, test_prob.ravel()),
+        brier_score_loss(y_test, test_cal))
+
     # Plot calibration curve
-    prob_true, prob_pred = calibration_curve(y_test, y_prob, n_bins=10, strategy="quantile")
+    prob_true, prob_pred = calibration_curve(y_test, test_cal, n_bins=10, strategy="quantile")
 
     plt.plot(prob_pred, prob_true, marker="o", label="Model")
     plt.plot([0, 1], [0, 1], "--", label="Perfect")
