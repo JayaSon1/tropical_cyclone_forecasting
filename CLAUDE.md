@@ -48,7 +48,11 @@ Settings, paths and the feature list live in `config/settings.py` (`MODEL_VERSIO
 - Show the pytest output as evidence. Don't just claim the tests pass.
 - The v2 golden-metrics test (`tests/test_metrics_golden.py`) must keep passing. Re-baselining it needs Jaya's approval. No code may load v1 artifacts.
 - Keep commits small, one logical change each, with a clear message. Don't commit data or artifacts.
-  The exceptions (Jaya, session 6) are `results/metrics_v2.json` and the force-added `artifacts/test_predictions_v2.csv`, which the golden test reads. The model files stay untracked.
+  The exceptions (Jaya, session 6) are `results/metrics_v2.json` and these force-added files:
+  - `artifacts/test_predictions_v2.csv`, which the golden test reads
+  - the deployable model set, which a fresh clone needs to run the app: `xgb_ri_v2.joblib`, `platt_calibrator_v2.joblib`, `feature_cols_v2.joblib`, `model_meta_v2.json`
+  
+  The pickles are tied to the library versions recorded in `model_meta_v2.json`.
 
 ## Gotchas
 - **Thread-count reproducibility:** xgboost hist results depend on `n_jobs`. On the v1 data, `n_jobs=1` vs `-1` changed `best_iteration` from 94 to 167 and predictions by up to 0.34.
