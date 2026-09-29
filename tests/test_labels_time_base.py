@@ -175,4 +175,5 @@ def test_full_data_matches_check_ab_simulation():
     assert (len(rows), int(rows["RI"].sum())) == (12941, 858)
     train, val, test = split_data(rows)
     counts = [(len(s), int(s["RI"].sum())) for s in (train, val, test)]
-    assert counts == [(10337, 656), (1088, 88), (1516, 114)]
+    # Train is 1980-2015 (§6 decision 12): Check B 1980+ (10,288 / 670) minus 2016-19 and 2020+
+    assert counts == [(7684, 468), (1088, 88), (1516, 114)]

@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 import json
 import sys
 from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import GroupKFold
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.append(str(PROJECT_ROOT))
@@ -40,6 +41,7 @@ def load_data(path=settings.PROCESSED_DATA_PATH):
 
 def split_data(
     df,
+    train_min_year=settings.TRAIN_MIN_YEAR,
     train_max_year=settings.TRAIN_MAX_YEAR,
     val_min_year=settings.VAL_MIN_YEAR,
     val_max_year=settings.VAL_MAX_YEAR,
@@ -47,70 +49,89 @@ def split_data(
 ):
     # Create a temporal split
     # One year per storm = year of first observation (genesis)
-    storm_year = (
-        df.groupby("storm_id")["datetime"]
-        .min()
-        .dt.year
-        .rename("storm_year")
-    )
-
-    df = df.merge(storm_year, left_on="storm_id", right_index=True)
+    storm_year = df.groupby("storm_id")["datetime"].min().dt.year
+    df = df.assign(storm_year=df["storm_id"].map(storm_year))
 
     print("Creating temporal split...")
-    training_set = df[df["storm_year"] <= train_max_year]
-    validation_set = df[(df["storm_year"] >= val_min_year) & (df["storm_year"] <= val_max_year)]
+    training_set = df[df["storm_year"].between(train_min_year, train_max_year)]
+    validation_set = df[df["storm_year"].between(val_min_year, val_max_year)]
     test_set = df[df["storm_year"] >= test_min_year]
 
-    # Check that there are no storms that overlap in the training, validation and testing sets
+    # No storm may appear in two sets
     train_ids = set(training_set["storm_id"])
     val_ids   = set(validation_set["storm_id"])
     test_ids  = set(test_set["storm_id"])
+    overlap = (train_ids & val_ids) | (train_ids & test_ids) | (val_ids & test_ids)
+    if overlap:
+        raise ValueError(f"storms overlap between train / calibration / test: {sorted(overlap)}")
 
-    print("Train and Val :", len(train_ids & val_ids))   # must be 0
-    print("Train and Test:", len(train_ids & test_ids))  # must be 0
-    print("Val and Test  :", len(val_ids & test_ids))    # must be 0
-
-    print(f"Training: {len(training_set)} | Validation: {len(validation_set)} | Test: {len(test_set)}")
+    print(f"Training: {len(training_set)} | Calibration: {len(validation_set)} | Test: {len(test_set)}")
     print("Training RI rate:", training_set["RI"].mean().round(3))
-    print("Validation RI rate:", validation_set["RI"].mean().round(3))
+    print("Calibration RI rate:", validation_set["RI"].mean().round(3))
     print("Test RI rate:", test_set["RI"].mean().round(3))
 
     return training_set, validation_set, test_set
 
 
+def check_years(df, min_year, max_year, what):
+    # Raise if any row's storm year is outside [min_year, max_year]
+    years = df["storm_year"]
+    if not years.between(min_year, max_year).all():
+        raise ValueError(
+            f"{what} must use storms from {min_year}-{max_year} only, got years {years.min()}-{years.max()}"
+        )
+
+
+def season_folds(training_set, n_folds=settings.CV_FOLDS):
+    # CV folds grouped by season, so no season or storm is on both sides of a fold
+    folds = GroupKFold(n_splits=n_folds).split(training_set, groups=training_set["storm_year"])
+    return [(training_set.index[fit], training_set.index[hold]) for fit, hold in folds]
+
+
+def class_weight(y):
+    # Scaling factor for class imbalance: negatives / positives
+    n_pos = y.sum()
+    return (len(y) - n_pos) / n_pos
+
+
 def train_model(
     training_set,
-    validation_set,
     feature_cols=settings.FEATURE_COLS,
     params=settings.XGB_PARAMS,
     n_jobs=settings.N_JOBS,
+    n_folds=settings.CV_FOLDS,
 ):
-    X_train, y_train = training_set[feature_cols], training_set["RI"]
-    X_validation, y_validation = validation_set[feature_cols], validation_set["RI"]
+    check_years(training_set, settings.TRAIN_MIN_YEAR, settings.TRAIN_MAX_YEAR, "Training")
 
-    # Calculate scaling factor for class imbalance
-    print("Computing class imbalance scaling factor...")
-    n_pos = y_train.sum()
-    n_neg = len(y_train) - n_pos
-    scale_pos_weight = n_neg / n_pos
+    # Early stopping on season-grouped folds inside the train years
+    print("Choosing the number of rounds by season-grouped CV...")
+    fold_rounds = []
+    for fit_idx, hold_idx in season_folds(training_set, n_folds):
+        fit_rows, hold_rows = training_set.loc[fit_idx], training_set.loc[hold_idx]
+        fold = xgb.XGBClassifier(**params, scale_pos_weight=class_weight(fit_rows["RI"]), n_jobs=n_jobs)
+        fold.fit(
+            fit_rows[feature_cols], fit_rows["RI"],
+            eval_set=[(hold_rows[feature_cols], hold_rows["RI"])],
+            verbose=False,
+        )
+        fold_rounds.append(fold.best_iteration + 1)
+    n_rounds = int(np.median(fold_rounds))
+    print(f"Fold rounds {fold_rounds} -> median {n_rounds}")
+
+    # Refit on all train years with that fixed number of rounds, no early stopping
+    scale_pos_weight = class_weight(training_set["RI"])
     print(f"scale_pos_weight = {scale_pos_weight:.1f}")
+    final_params = dict(params, n_estimators=n_rounds, early_stopping_rounds=None)
+    model = xgb.XGBClassifier(**final_params, scale_pos_weight=scale_pos_weight, n_jobs=n_jobs)
+    model.fit(training_set[feature_cols], training_set["RI"], verbose=False)
 
-    # Train the model
-    print("Training model...")
-    model = xgb.XGBClassifier(**params, scale_pos_weight=scale_pos_weight, n_jobs=n_jobs)
-
-    print("Fitting model...")
-    model.fit(
-        X_train, y_train,
-        eval_set=[(X_validation, y_validation)],
-        verbose=50,
-    )
-
-    return model, scale_pos_weight
+    cv_info = {"cv_folds": n_folds, "fold_rounds": fold_rounds, "n_rounds": n_rounds}
+    return model, scale_pos_weight, cv_info
 
 
 def calibrate(model, validation_set, feature_cols=settings.FEATURE_COLS):
-    # The imbalance scale factor usually pushes scores in a smooth way so Platt scaling can fix this
+    # Platt scaling, fitted on the calibration years only
+    check_years(validation_set, settings.VAL_MIN_YEAR, settings.VAL_MAX_YEAR, "Calibration")
     validation_prob = model.predict_proba(validation_set[feature_cols])[:, 1].reshape(-1, 1)
 
     platt = LogisticRegression()
@@ -118,32 +139,106 @@ def calibrate(model, validation_set, feature_cols=settings.FEATURE_COLS):
     return platt
 
 
-def evaluate(model, test_set, feature_cols=settings.FEATURE_COLS, thresholds=settings.THRESHOLDS, calibrator=None):
+def risk_bands(validation_set, y_prob_cal=None):
+    # Band edges are multiples of a calibration-set base rate (calibrated probability scale).
+    # y_prob_cal: calibrated P(RI) on the same rows, needed for the "mean_calibrated" rule.
+    check_years(validation_set, settings.VAL_MIN_YEAR, settings.VAL_MAX_YEAR, "Risk bands")
+    observed_rate = float(validation_set["RI"].mean())
+    mean_calibrated = None if y_prob_cal is None else float(np.mean(y_prob_cal))
+
+    rule = settings.BAND_BASE_RATE
+    if rule == "observed":
+        base_rate = observed_rate
+    elif rule == "mean_calibrated":
+        if mean_calibrated is None:
+            raise ValueError("BAND_BASE_RATE 'mean_calibrated' needs the calibrated probabilities (y_prob_cal)")
+        base_rate = mean_calibrated
+    else:
+        raise ValueError(f"Unknown BAND_BASE_RATE {rule!r}; use 'observed' or 'mean_calibrated'")
+
+    return {
+        "base_rate_rule": rule,
+        "base_rate": base_rate,
+        "observed_rate": observed_rate,
+        "mean_calibrated_prob": mean_calibrated,
+        "multipliers": list(settings.BAND_MULTIPLIERS),
+        "edges": [m * base_rate for m in settings.BAND_MULTIPLIERS],
+        "labels": list(settings.BAND_LABELS),
+    }
+
+
+def bootstrap_pr_auc_ci(storm_ids, y_true, y_prob, n_boot=None, seed=None, level=None):
+    # Percentile CI for PR-AUC, resampling whole storms (rows within a storm are correlated).
+    # Defaults are read from config at call time. Resamples with no positive are skipped.
+    n_boot = settings.BOOTSTRAP_N if n_boot is None else n_boot
+    seed = settings.BOOTSTRAP_SEED if seed is None else seed
+    level = settings.CI_LEVEL if level is None else level
+
+    storm_ids, y_true, y_prob = np.asarray(storm_ids), np.asarray(y_true), np.asarray(y_prob)
+    storms, codes = np.unique(storm_ids, return_inverse=True)
+    rows_of = [np.flatnonzero(codes == i) for i in range(len(storms))]
+
+    rng = np.random.default_rng(seed)
+    samples = []
+    for _ in range(n_boot):
+        rows = np.concatenate([rows_of[i] for i in rng.integers(0, len(storms), len(storms))])
+        if y_true[rows].any():
+            samples.append(average_precision_score(y_true[rows], y_prob[rows]))
+    samples = np.array(samples)
+    if len(samples) < settings.BOOTSTRAP_MIN_VALID * n_boot:
+        raise ValueError(
+            f"Only {len(samples)} of {n_boot} bootstrap resamples are usable (contain an RI case); "
+            f"need at least {settings.BOOTSTRAP_MIN_VALID:.0%}"
+        )
+
+    alpha = (1 - level) / 2
+    lower, upper = np.quantile(samples, [alpha, 1 - alpha])
+    return {
+        "point": float(average_precision_score(y_true, y_prob)),
+        "lower": float(lower),
+        "upper": float(upper),
+        "level": level,
+        "n_boot": n_boot,
+        "n_valid": int(len(samples)),
+        "seed": seed,
+        "samples": samples,
+    }
+
+
+def evaluate(model, test_set, calibrator, bands, feature_cols=settings.FEATURE_COLS):
     X_test, y_test = test_set[feature_cols], test_set["RI"]
 
-    # Evaluate performance
+    # Evaluate performance on raw and calibrated probabilities
     print("Evaluate model...")
     y_prob = model.predict_proba(X_test)[:, 1]
+    y_prob_cal = calibrator.predict_proba(y_prob.reshape(-1, 1))[:, 1]
+
     pr_auc = average_precision_score(y_test, y_prob)
-    print(f"Test PR-AUC: {pr_auc:.4f}")
+    pr_auc_cal = average_precision_score(y_test, y_prob_cal)
+    brier = brier_score_loss(y_test, y_prob)
+    brier_cal = brier_score_loss(y_test, y_prob_cal)
+    print(f"Test PR-AUC raw / calibrated: {pr_auc:.4f} / {pr_auc_cal:.4f}")
+    print(f"Test Brier raw / calibrated: {brier:.4f} / {brier_cal:.4f}")
 
+    pr_auc_ci = bootstrap_pr_auc_ci(test_set["storm_id"], y_test, y_prob_cal)
+    print(f"Test PR-AUC {pr_auc_ci['level']:.0%} CI: [{pr_auc_ci['lower']:.4f}, {pr_auc_ci['upper']:.4f}]")
+
+    # Thresholds are the band edges, fitted on the calibration years, applied to calibrated P(RI)
     threshold_metrics = {}
-    for threshold in thresholds:
-
-        # If the predicted value is above the threshold, set to 1
-        y_pred = (y_prob >= threshold).astype(int)
-
-        # Evaluation metrics
+    for threshold in bands["edges"]:
+        y_pred = (y_prob_cal >= threshold).astype(int)
         precision = precision_score(y_test, y_pred, zero_division=0)
         recall  = recall_score(y_test, y_pred, zero_division=0)
 
-        threshold_metrics[str(threshold)] = {
+        threshold_metrics[f"{threshold:.6f}"] = {
             "precision": float(precision),
             "recall": float(recall),
             "n_predicted_positive": int(y_pred.sum()),
         }
+        print(f"Threshold {threshold:.4f} -> Precision {precision:.3f} | Recall {recall:.3f}")
 
-        print(f"Threshold {threshold:.2f} -> Precision {precision:.3f} | Recall {recall:.3f}")
+    band_index = np.searchsorted(bands["edges"], y_prob_cal, side="right")
+    band_counts = {label: int((band_index == i).sum()) for i, label in enumerate(bands["labels"])}
 
     # Compare against trivial baselines
 
@@ -157,36 +252,29 @@ def evaluate(model, test_set, feature_cols=settings.FEATURE_COLS, thresholds=set
 
     print(f"Majority / all-zero PR-AUC: {pr_auc_majority:.4f}")
     print(f"Persistence PR-AUC: {pr_auc_persist:.4f}")
-    print(f"XGBoost PR-AUC: {pr_auc:.4f}")
 
-    result = {
+    return {
         "y_prob": y_prob,
+        "y_prob_cal": y_prob_cal,
         "pr_auc": pr_auc,
-        "thresholds": threshold_metrics,
+        "pr_auc_cal": pr_auc_cal,
+        "brier": brier,
+        "brier_cal": brier_cal,
+        "pr_auc_ci": pr_auc_ci,
+        "thresholds_cal": threshold_metrics,
+        "band_counts": band_counts,
         "pr_auc_majority": pr_auc_majority,
         "pr_auc_persistence": pr_auc_persist,
     }
 
-    if calibrator is not None:
-        test_cal = calibrator.predict_proba(y_prob.reshape(-1, 1))[:, 1]
 
-        print("PR-AUC raw / Platt:",
-            average_precision_score(y_test, y_prob),
-            average_precision_score(y_test, test_cal))
-
-        print("Brier raw / Platt:",
-            brier_score_loss(y_test, y_prob),
-            brier_score_loss(y_test, test_cal))
-
-        result["y_prob_cal"] = test_cal
-
-    return result
-
-
-def build_metrics(training_set, validation_set, test_set, scale_pos_weight, eval_result, feature_cols=settings.FEATURE_COLS):
+def build_metrics(training_set, validation_set, test_set, scale_pos_weight, cv_info, bands, eval_result,
+                  feature_cols=settings.FEATURE_COLS):
+    ci = {k: v for k, v in eval_result["pr_auc_ci"].items() if k != "samples"}
     return {
         "model": settings.MODEL_NAME,
         "split": {
+            "train_min_year": settings.TRAIN_MIN_YEAR,
             "train_max_year": settings.TRAIN_MAX_YEAR,
             "val_years": f"{settings.VAL_MIN_YEAR}-{settings.VAL_MAX_YEAR}",
             "test_min_year": settings.TEST_MIN_YEAR,
@@ -198,10 +286,20 @@ def build_metrics(training_set, validation_set, test_set, scale_pos_weight, eval
         "ri_rate_val": float(validation_set["RI"].mean()),
         "ri_rate_test": float(test_set["RI"].mean()),
         "scale_pos_weight": float(scale_pos_weight),
-        "pr_auc_test": float(eval_result["pr_auc"]),
+        "cv_folds": cv_info["cv_folds"],
+        "fold_rounds": cv_info["fold_rounds"],
+        "n_rounds": cv_info["n_rounds"],
+        "n_jobs": settings.N_JOBS,
+        "pr_auc_test_raw": float(eval_result["pr_auc"]),
+        "pr_auc_test_cal": float(eval_result["pr_auc_cal"]),
+        "pr_auc_test_ci": ci,
+        "brier_test_raw": float(eval_result["brier"]),
+        "brier_test_cal": float(eval_result["brier_cal"]),
+        "risk_bands": bands,
+        "thresholds_cal": eval_result["thresholds_cal"],
+        "band_counts_test": eval_result["band_counts"],
         "pr_auc_majority": float(eval_result["pr_auc_majority"]),
         "pr_auc_persistence": float(eval_result["pr_auc_persistence"]),
-        "thresholds": eval_result["thresholds"],
         "features": feature_cols,
     }
 
@@ -219,9 +317,10 @@ def save_artifacts(
     artifacts_dir, results_dir = Path(artifacts_dir), Path(results_dir)
     artifacts_dir.mkdir(parents=True, exist_ok=True)
 
-    # Save predictions
+    # Save raw and calibrated predictions
     pred_df = test_set[["storm_id", "name", "datetime", "RI"]].copy()
     pred_df["y_prob"] = eval_result["y_prob"]
+    pred_df["y_prob_cal"] = eval_result["y_prob_cal"]
     pred_df.to_csv(artifacts_dir / settings.TEST_PREDICTIONS_FILE, index=False)
 
     # Save model, feature list and Platt calibrator
@@ -314,10 +413,12 @@ def predict(X, model=None, calibrator=None):
 def main():
     df = load_data()
     training_set, validation_set, test_set = split_data(df)
-    model, scale_pos_weight = train_model(training_set, validation_set)
+    model, scale_pos_weight, cv_info = train_model(training_set)
     calibrator = calibrate(model, validation_set)
-    eval_result = evaluate(model, test_set, calibrator=calibrator)
-    metrics = build_metrics(training_set, validation_set, test_set, scale_pos_weight, eval_result)
+    bands = risk_bands(validation_set, predict(validation_set[settings.FEATURE_COLS], model, calibrator))
+    # Test is used once, here
+    eval_result = evaluate(model, test_set, calibrator, bands)
+    metrics = build_metrics(training_set, validation_set, test_set, scale_pos_weight, cv_info, bands, eval_result)
     save_artifacts(model, calibrator, settings.FEATURE_COLS, test_set, eval_result, metrics)
 
     # Compute SHAP

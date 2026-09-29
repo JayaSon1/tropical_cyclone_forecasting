@@ -325,11 +325,14 @@ Retraining happens only once, in session 6. Every session is test-first: write t
 | 2 | Importable refactor + config (#11) — **done 2026-09-29** (`7e239242`) | no | A parity test: `load → split → train → evaluate` through the new functions, with v1 settings (`n_jobs=-1`), reproduces v1 test PR-AUC 0.385453 in memory. It fails on import → refactor. |
 | 3 | Feature contract (#2) — **done 2026-09-29** (`3db0406b`) | no | `predict()` raises on a reordered DataFrame, a missing column or a numpy array. The saved feature list equals the config list. Modelling row count is unchanged after removing the duplicate list. |
 | 4 | Label scope (#1, #4, #5) — **done 2026-09-29** (`31cc57cd`) | **yes** (data) | Synthetic storms: an off-synoptic `L` record inside the window; a missing synoptic step (no t+24 → NA); exact 6/12 h lags and speed Δt; EX/LO at t+24 → NA; `L` in [t, t+24 h] → excluded; +29/+30 kt boundary. *Done:* the rebuild from raw gives 12,941 rows / 858 RI, matching Check A/B exactly. The saved parquet is still v1 until session 6. |
-| 5 | Training setup (#3, #6, #12, 12b) | **yes** (model) | Small synthetic data: the split has 1980 ≤ train ≤ 2015 and disjoint storms; CV folds never share a season; rounds = median best iteration; the calibrator, thresholds and bands see only 2016–19 rows; the config `n_jobs` is used and two fits are identical; the calibrated-prediction CSV is written; bootstrap CI is deterministic with a seed. **No full retrain.** |
+| 5 | Training setup (#3, #6, #12, 12b) — **done 2026-09-29** | **yes** (model) | Small synthetic data: the split has 1980 ≤ train ≤ 2015 and disjoint storms; CV folds never share a season; rounds = median best iteration; the calibrator, thresholds and bands see only 2016–19 rows; the config `n_jobs` is used and two fits are identical; the calibrated-prediction CSV is written; bootstrap CI is deterministic with a seed. **No full retrain.** |
 | 6 | Single retrain → v2 | — | Regenerate the data, v2 artifacts, metrics (raw + calibrated, CI) and SHAP. Re-baseline the golden test to v2 **with Jaya's approval**. Compare v1 vs v2 on validation; the test comparison is not like-for-like (§6). Update the README. |
+
+**Parity tests retired (session 5, Jaya approved):** `tests/test_training_parity.py` (session 2) was deleted on purpose. Session 5 changes the training procedure: train 1980–2015, season-CV early stopping and a refit, `N_JOBS=1`, calibrated metrics. v1 can therefore no longer be reproduced through the default code path. The v1 golden test and `test_feature_contract`'s fixed-row `predict()` parity stay as the v1 safety net until session 6. Session 6's v1-vs-v2 comparison table replaces the parity tests.
 
 ### Follow-ups
 - `compute_shap.explain` uses hard-coded `artifacts/` paths and creates `artifacts/` on import. Move the paths to `config/settings.py` and remove the import-time side effect (do with session 3 or before the app). *(Found in session 2.)*
+- **Session 6 task:** save risk bands and thresholds next to the model file (e.g. model_meta.json) so the app can load them. *(Found in session 5; today they are only in the metrics JSON.)*
 
 ---
 

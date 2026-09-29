@@ -35,11 +35,16 @@ FEATURE_COLS = [
 # Statuses that count as a tropical cyclone, required at t and at t+24 (AUDIT.md §6 decision 4)
 TROPICAL_STATUSES = ["TD", "TS", "HU", "SD", "SS"]
 
-# Split by storm genesis year
+# Split by storm genesis year (AUDIT.md §6 decisions 12, 12b). The VAL_* years are the
+# calibration years: Platt, thresholds and risk bands are fitted on them only.
+TRAIN_MIN_YEAR = 1980
 TRAIN_MAX_YEAR = 2015
 VAL_MIN_YEAR = 2016
 VAL_MAX_YEAR = 2019
 TEST_MIN_YEAR = 2020
+
+# Early stopping: season-grouped CV folds inside the train years, median best rounds, refit
+CV_FOLDS = 5
 
 # XGBoost hyperparameters (scale_pos_weight is computed from the train split)
 XGB_PARAMS = dict(
@@ -54,10 +59,21 @@ XGB_PARAMS = dict(
     random_state=42,
 )
 
-# v1 value, kept for parity. xgboost hist results depend on the thread count
-# (n_jobs=1 vs -1 changed best_iteration from 94 to 167, see CLAUDE.md), so v1 is
-# only reproducible on the machine that trained it. Session 5 pins this.
-N_JOBS = -1
+# xgboost hist results depend on the thread count (n_jobs=1 vs -1 changed v1's
+# best_iteration from 94 to 167, see CLAUDE.md), so it is pinned. Never use -1.
+N_JOBS = 1
 
-# Fixed decision thresholds on raw probabilities (v1 reporting)
-THRESHOLDS = [0.10, 0.20, 0.30, 0.50]
+# Risk bands on calibrated P(RI): edges = BAND_MULTIPLIERS x a 2016-19 base rate.
+# Low < 1x, Elevated 1-2x, High >= 2x. The edges are also the reported thresholds.
+# BAND_BASE_RATE: "observed" (RI rate of the calibration rows) or "mean_calibrated"
+# (mean calibrated P(RI) on those rows). Both are recorded in the metrics.
+BAND_BASE_RATE = "observed"
+BAND_MULTIPLIERS = [1, 2]
+BAND_LABELS = ["Low", "Elevated", "High"]
+
+# Bootstrap CI for test PR-AUC, resampling whole storms. Resamples with no RI case
+# are skipped; fewer than BOOTSTRAP_MIN_VALID usable resamples is an error.
+BOOTSTRAP_N = 2000
+BOOTSTRAP_SEED = 42
+CI_LEVEL = 0.95
+BOOTSTRAP_MIN_VALID = 0.95
