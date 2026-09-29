@@ -257,11 +257,52 @@ def load_model(artifacts_dir=settings.ARTIFACTS_DIR):
     model = joblib.load(artifacts_dir / settings.MODEL_FILE)
     calibrator = joblib.load(artifacts_dir / settings.CALIBRATOR_FILE)
     feature_cols = joblib.load(artifacts_dir / settings.FEATURE_COLS_FILE)
+
+    # The saved list and the model's own names must equal the config list, in order
+    booster_cols = model.get_booster().feature_names
+    if feature_cols != settings.FEATURE_COLS or booster_cols != settings.FEATURE_COLS:
+        raise ValueError(
+            f"Saved feature list {feature_cols} / model feature names {booster_cols} "
+            f"do not match config FEATURE_COLS {settings.FEATURE_COLS}"
+        )
     return model, calibrator, feature_cols
+
+
+def validate_features(X, feature_cols=settings.FEATURE_COLS):
+    # X must be a DataFrame with exactly feature_cols, in that order, all numeric.
+    # A numpy array skips xgboost's name check and is silently mis-ordered, so reject it.
+    if not isinstance(X, pd.DataFrame):
+        raise TypeError(f"X must be a pandas DataFrame with columns {feature_cols}, got {type(X).__name__}")
+
+    columns = list(X.columns)
+    missing = [c for c in feature_cols if c not in columns]
+    if missing:
+        raise ValueError(f"X is missing feature columns {missing}; expected {feature_cols}")
+    extra = [c for c in columns if c not in feature_cols]
+    if extra:
+        raise ValueError(f"X has unexpected columns {extra}; expected {feature_cols}")
+    if columns != list(feature_cols):
+        raise ValueError(f"X columns are in the wrong order {columns}; expected order {feature_cols}")
+
+    # Booleans count as numeric to pandas but no feature is boolean
+    non_numeric = [
+        c for c in feature_cols
+        if not pd.api.types.is_numeric_dtype(X[c]) or pd.api.types.is_bool_dtype(X[c])
+    ]
+    if non_numeric:
+        raise TypeError(f"X has non-numeric feature columns {non_numeric}: {X[non_numeric].dtypes.to_dict()}")
+
+    # The model was trained on complete rows only; rows without enough history
+    # (e.g. no 6 h / 12 h lag) must not be scored
+    nan_cols = [c for c in feature_cols if X[c].isna().any()]
+    if nan_cols:
+        n_rows = int(X[nan_cols].isna().any(axis=1).sum())
+        raise ValueError(f"X has NaN in feature columns {nan_cols} in {n_rows} rows; no forecast for those rows")
 
 
 def predict(X, model=None, calibrator=None):
     # Returns calibrated P(RI). Loads the saved model and calibrator if not given.
+    validate_features(X)
     if model is None or calibrator is None:
         saved_model, saved_calibrator, _ = load_model()
         model = saved_model if model is None else model

@@ -215,6 +215,7 @@ The model predicts **the probability of RI (≥30 kt increase in 24 h) given tha
 2. **Feature order (risk 2):** one feature list, defined in one place and saved with the model.
    - `predict()` accepts only a pandas DataFrame and validates column names and order. A wrong order or a missing column raises a clear error.
    - Remove the duplicate list at `parse_hurdat2.py:166–177`.
+   - *Implementation note (session 3):* `predict()` also rejects boolean or non-numeric columns and any NaN in a feature, naming the column(s) and the row count. The model was trained only on complete rows. A storm's first rows have no 6 h / 12 h lag, and some rows have no `mslp`. **For such rows the app must show "no forecast available" and must not call `predict()`.**
 3. **Determinism (risk 6):** pin `n_jobs` to a fixed value stored in one config location, and document it.
 4. **Non-tropical at t+24 (risk 3):** exclude rows whose t+24 status is not TD/TS/HU/SD/SS, e.g. EX, LO, WV, DB. This enforces the scope above.
 5. **Landfall (risk 4):** keep the landfall exclusion as a scope filter and document that it uses future information.
