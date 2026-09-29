@@ -11,10 +11,11 @@ Run from the repo root. Always use the venv: the system `python` lacks pytest an
 PYTHONDONTWRITEBYTECODE=1 hurricane-env/Scripts/python.exe -m data.parse_hurdat2          # raw -> labels -> features -> parquet
 PYTHONDONTWRITEBYTECODE=1 hurricane-env/Scripts/python.exe src/models/xgboost_model.py     # split, train, calibrate, metrics, SHAP (overwrites artifacts/, results/)
 PYTHONDONTWRITEBYTECODE=1 hurricane-env/Scripts/python.exe -m pytest tests -q -p no:cacheprovider
+PYTHONDONTWRITEBYTECODE=1 hurricane-env/Scripts/python.exe -m pytest tests -q -p no:cacheprovider -m "not slow"   # fast loop, skips bootstrap-heavy tests
 PYTHONDONTWRITEBYTECODE=1 hurricane-env/Scripts/python.exe -m pytest tests/test_irene.py -q -p no:cacheprovider
 ```
 
-## Pipeline map (v1; details and line numbers in AUDIT.md §1)
+## Pipeline map (v2; v1 details and line numbers in AUDIT.md §1)
 1. Parse: `data/parse_hurdat2.py:parse_hurdat2`
 2. Label: `src/features/labels.py:ri_labels`
 3. Features: `src/features/build_features.py:extract_features`
@@ -22,7 +23,7 @@ PYTHONDONTWRITEBYTECODE=1 hurricane-env/Scripts/python.exe -m pytest tests/test_
 5. Split, train, calibrate, evaluate, save: the `src/models/xgboost_model.py` `__main__` block
 6. SHAP: `explainability/compute_shap.py:explain`
 
-`config/` and `src/interpret/` are empty. Everything is hardcoded until fix session 2.
+Settings, paths and the feature list live in `config/settings.py` (`MODEL_VERSION = "v2"`). `src/interpret/` is empty.
 
 ## Modelling rules (Jaya's decisions, AUDIT.md §6)
 - Keep only synoptic times (00/06/12/18 UTC) before labelling. t+24 and the 6 h / 12 h lags use an **exact-timestamp match within the storm**, never `shift(n)`.
@@ -37,7 +38,7 @@ PYTHONDONTWRITEBYTECODE=1 hurricane-env/Scripts/python.exe -m pytest tests/test_
 - `n_jobs` is pinned in config. Never use `-1` for a model you save.
 - Plots use the Agg backend, and `savefig` is called before any `show`.
 - Never put a future-derived column (`vmax_24h`, `delta_vmax_24h`, `landfall_next_24h`, t+24 status) into the features.
-- v1 vs v2 test metrics are **not like-for-like**, because the test rows change. Compare on validation and say so.
+- v1 is superseded (preserved at the `pre-fixes` tag) and is **not a baseline**. Evaluate against persistence and climatology on the same test rows and storm resamples (AUDIT.md §8, session 6 evaluation plan). 2016–19 results are secondary and labelled optimistic.
 
 ## Workflow rules
 - One fix per session, in the order of AUDIT.md §8. Retrain only once, in the final session.
@@ -45,8 +46,9 @@ PYTHONDONTWRITEBYTECODE=1 hurricane-env/Scripts/python.exe -m pytest tests/test_
 - Never change modelling code without a failing test first.
 - **Never edit or delete a test just to make it pass.** Stop and ask Jaya.
 - Show the pytest output as evidence. Don't just claim the tests pass.
-- The v1 golden-metrics test must keep passing until the retrain session. Re-baselining it needs Jaya's approval.
+- The v2 golden-metrics test (`tests/test_metrics_golden.py`) must keep passing. Re-baselining it needs Jaya's approval. No code may load v1 artifacts.
 - Keep commits small, one logical change each, with a clear message. Don't commit data or artifacts.
+  The exceptions (Jaya, session 6) are `results/metrics_v2.json` and the force-added `artifacts/test_predictions_v2.csv`, which the golden test reads. The model files stay untracked.
 
 ## Gotchas
 - **Thread-count reproducibility:** xgboost hist results depend on `n_jobs`. On the v1 data, `n_jobs=1` vs `-1` changed `best_iteration` from 94 to 167 and predictions by up to 0.34.

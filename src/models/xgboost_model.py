@@ -10,6 +10,9 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import json
 import sys
+import hashlib
+import platform
+import sklearn
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import GroupKFold
 
@@ -167,41 +170,83 @@ def risk_bands(validation_set, y_prob_cal=None):
     }
 
 
-def bootstrap_pr_auc_ci(storm_ids, y_true, y_prob, n_boot=None, seed=None, level=None):
-    # Percentile CI for PR-AUC, resampling whole storms (rows within a storm are correlated).
-    # Defaults are read from config at call time. Resamples with no positive are skipped.
+def storm_resamples(storm_ids, n_boot, seed):
+    # Row indices of n_boot resamples of whole storms (rows within a storm are correlated)
+    storms, codes = np.unique(np.asarray(storm_ids), return_inverse=True)
+    rows_of = [np.flatnonzero(codes == i) for i in range(len(storms))]
+    rng = np.random.default_rng(seed)
+    return [
+        np.concatenate([rows_of[i] for i in rng.integers(0, len(storms), len(storms))])
+        for _ in range(n_boot)
+    ]
+
+
+def paired_bootstrap(storm_ids, y_true, stats, n_boot=None, seed=None, level=None):
+    # Percentile CIs for several statistics on the same storm resamples, so differences are paired.
+    # stats: {name: function of row indices -> float}. Defaults are read from config at call time.
+    # Resamples with no positive are skipped.
     n_boot = settings.BOOTSTRAP_N if n_boot is None else n_boot
     seed = settings.BOOTSTRAP_SEED if seed is None else seed
     level = settings.CI_LEVEL if level is None else level
 
-    storm_ids, y_true, y_prob = np.asarray(storm_ids), np.asarray(y_true), np.asarray(y_prob)
-    storms, codes = np.unique(storm_ids, return_inverse=True)
-    rows_of = [np.flatnonzero(codes == i) for i in range(len(storms))]
-
-    rng = np.random.default_rng(seed)
-    samples = []
-    for _ in range(n_boot):
-        rows = np.concatenate([rows_of[i] for i in rng.integers(0, len(storms), len(storms))])
-        if y_true[rows].any():
-            samples.append(average_precision_score(y_true[rows], y_prob[rows]))
-    samples = np.array(samples)
-    if len(samples) < settings.BOOTSTRAP_MIN_VALID * n_boot:
+    y_true = np.asarray(y_true)
+    usable = [rows for rows in storm_resamples(storm_ids, n_boot, seed) if y_true[rows].any()]
+    if len(usable) < settings.BOOTSTRAP_MIN_VALID * n_boot:
         raise ValueError(
-            f"Only {len(samples)} of {n_boot} bootstrap resamples are usable (contain an RI case); "
+            f"Only {len(usable)} of {n_boot} bootstrap resamples are usable (contain an RI case); "
             f"need at least {settings.BOOTSTRAP_MIN_VALID:.0%}"
         )
 
     alpha = (1 - level) / 2
-    lower, upper = np.quantile(samples, [alpha, 1 - alpha])
+    all_rows = np.arange(len(y_true))
+    results = {}
+    for name, stat in stats.items():
+        samples = np.array([stat(rows) for rows in usable])
+        lower, upper = np.quantile(samples, [alpha, 1 - alpha])
+        results[name] = {"point": float(stat(all_rows)), "lower": float(lower), "upper": float(upper),
+                         "samples": samples}
+    return {"bootstrap": {"level": level, "n_boot": n_boot, "n_valid": len(usable), "seed": seed},
+            "stats": results}
+
+
+def bootstrap_pr_auc_ci(storm_ids, y_true, y_prob, n_boot=None, seed=None, level=None):
+    # Percentile CI for PR-AUC, resampling whole storms
+    y_true, y_prob = np.asarray(y_true), np.asarray(y_prob)
+    boot = paired_bootstrap(
+        storm_ids, y_true, {"pr_auc": lambda rows: average_precision_score(y_true[rows], y_prob[rows])},
+        n_boot, seed, level,
+    )
+    return {**boot["stats"]["pr_auc"], **boot["bootstrap"]}
+
+
+def baseline_comparison(storm_ids, y_true, y_prob, persistence, climatology_rate,
+                        n_boot=None, seed=None, level=None):
+    # The model vs persistence and climatology on the same rows and the same storm resamples
+    # (AUDIT.md §8 session 6 evaluation plan). climatology_rate is the 2016-19 observed RI
+    # rate, not the test rate, so nothing is tuned on test.
+    y, p, persist = np.asarray(y_true), np.asarray(y_prob), np.asarray(persistence)
+    clim = np.full(len(y), float(climatology_rate))
+    ap = average_precision_score
+
+    def brier_skill(rows):
+        return 1 - brier_score_loss(y[rows], p[rows]) / brier_score_loss(y[rows], clim[rows])
+
+    boot = paired_bootstrap(storm_ids, y, {
+        "model": lambda rows: ap(y[rows], p[rows]),
+        "persistence": lambda rows: ap(y[rows], persist[rows]),
+        "climatology": lambda rows: ap(y[rows], clim[rows]),
+        "model_minus_persistence": lambda rows: ap(y[rows], p[rows]) - ap(y[rows], persist[rows]),
+        "brier_skill_score": brier_skill,
+    }, n_boot, seed, level)
+    stats = boot["stats"]
     return {
-        "point": float(average_precision_score(y_true, y_prob)),
-        "lower": float(lower),
-        "upper": float(upper),
-        "level": level,
-        "n_boot": n_boot,
-        "n_valid": int(len(samples)),
-        "seed": seed,
-        "samples": samples,
+        "n_rows": int(len(y)),
+        "n_pos": int(y.sum()),
+        "climatology_rate": float(climatology_rate),
+        "bootstrap": boot["bootstrap"],
+        "pr_auc": {k: stats[k] for k in ("model", "persistence", "climatology", "model_minus_persistence")},
+        "brier": {"model": float(brier_score_loss(y, p)), "climatology": float(brier_score_loss(y, clim))},
+        "brier_skill_score": stats["brier_skill_score"],
     }
 
 
@@ -210,7 +255,9 @@ def evaluate(model, test_set, calibrator, bands, feature_cols=settings.FEATURE_C
 
     # Evaluate performance on raw and calibrated probabilities
     print("Evaluate model...")
-    y_prob = model.predict_proba(X_test)[:, 1]
+    # float32 -> float64 is exact and float64 round-trips through the CSV, so the saved
+    # predictions reproduce every metric exactly (predict() calibrates the same float64 values)
+    y_prob = model.predict_proba(X_test)[:, 1].astype(np.float64)
     y_prob_cal = calibrator.predict_proba(y_prob.reshape(-1, 1))[:, 1]
 
     pr_auc = average_precision_score(y_test, y_prob)
@@ -253,6 +300,12 @@ def evaluate(model, test_set, calibrator, bands, feature_cols=settings.FEATURE_C
     print(f"Majority / all-zero PR-AUC: {pr_auc_majority:.4f}")
     print(f"Persistence PR-AUC: {pr_auc_persist:.4f}")
 
+    # Model vs persistence and climatology, paired on the same storm resamples
+    baselines = baseline_comparison(test_set["storm_id"], y_test, y_prob_cal, persist_score, bands["observed_rate"])
+    diff, bss = baselines["pr_auc"]["model_minus_persistence"], baselines["brier_skill_score"]
+    print(f"PR-AUC model - persistence: {diff['point']:.4f} [{diff['lower']:.4f}, {diff['upper']:.4f}]")
+    print(f"Brier skill score vs climatology: {bss['point']:.4f} [{bss['lower']:.4f}, {bss['upper']:.4f}]")
+
     return {
         "y_prob": y_prob,
         "y_prob_cal": y_prob_cal,
@@ -265,12 +318,41 @@ def evaluate(model, test_set, calibrator, bands, feature_cols=settings.FEATURE_C
         "band_counts": band_counts,
         "pr_auc_majority": pr_auc_majority,
         "pr_auc_persistence": pr_auc_persist,
+        "baselines": baselines,
     }
 
 
+def evaluate_calibration_years(model, calibrator, validation_set, feature_cols=settings.FEATURE_COLS):
+    # Secondary results on 2016-19. These rows fitted Platt and the bands, so they are optimistic.
+    check_years(validation_set, settings.VAL_MIN_YEAR, settings.VAL_MAX_YEAR, "Calibration-year results")
+    y = validation_set["RI"]
+    y_prob = model.predict_proba(validation_set[feature_cols])[:, 1].astype(np.float64)
+    y_prob_cal = calibrator.predict_proba(y_prob.reshape(-1, 1))[:, 1]
+    return {
+        "note": "used for calibration and band-setting: optimistic",
+        "years": f"{settings.VAL_MIN_YEAR}-{settings.VAL_MAX_YEAR}",
+        "n_rows": int(len(y)),
+        "n_pos": int(y.sum()),
+        "pr_auc_raw": float(average_precision_score(y, y_prob)),
+        "pr_auc_cal": float(average_precision_score(y, y_prob_cal)),
+        "brier_raw": float(brier_score_loss(y, y_prob)),
+        "brier_cal": float(brier_score_loss(y, y_prob_cal)),
+    }
+
+
+def without_samples(ci):
+    return {k: v for k, v in ci.items() if k != "samples"}
+
+
 def build_metrics(training_set, validation_set, test_set, scale_pos_weight, cv_info, bands, eval_result,
-                  feature_cols=settings.FEATURE_COLS):
-    ci = {k: v for k, v in eval_result["pr_auc_ci"].items() if k != "samples"}
+                  feature_cols=settings.FEATURE_COLS, calibration_years=None):
+    ci = without_samples(eval_result["pr_auc_ci"])
+    base = eval_result["baselines"]
+    baselines = {
+        **base,
+        "pr_auc": {name: without_samples(v) for name, v in base["pr_auc"].items()},
+        "brier_skill_score": without_samples(base["brier_skill_score"]),
+    }
     return {
         "model": settings.MODEL_NAME,
         "split": {
@@ -300,6 +382,8 @@ def build_metrics(training_set, validation_set, test_set, scale_pos_weight, cv_i
         "band_counts_test": eval_result["band_counts"],
         "pr_auc_majority": float(eval_result["pr_auc_majority"]),
         "pr_auc_persistence": float(eval_result["pr_auc_persistence"]),
+        "baselines": baselines,
+        "calibration_years": calibration_years,
         "features": feature_cols,
     }
 
@@ -313,8 +397,9 @@ def save_artifacts(
     metrics,
     artifacts_dir=settings.ARTIFACTS_DIR,
     results_dir=settings.RESULTS_DIR,
+    data_path=settings.PROCESSED_DATA_PATH,
 ):
-    artifacts_dir, results_dir = Path(artifacts_dir), Path(results_dir)
+    artifacts_dir, results_dir, data_path = Path(artifacts_dir), Path(results_dir), Path(data_path)
     artifacts_dir.mkdir(parents=True, exist_ok=True)
 
     # Save raw and calibrated predictions
@@ -329,6 +414,30 @@ def save_artifacts(
     joblib.dump(feature_cols, artifacts_dir / settings.FEATURE_COLS_FILE)
     joblib.dump(calibrator, artifacts_dir / settings.CALIBRATOR_FILE)
     print("Model, feature list and calibrator saved...")
+
+    # Risk bands, thresholds and provenance next to the model, for the app
+    meta = {
+        "model_version": settings.MODEL_VERSION,
+        "model_file": settings.MODEL_FILE,
+        "calibrator_file": settings.CALIBRATOR_FILE,
+        "scope": "P(RI: >=30 kt increase in 24 h | the storm stays a tropical cyclone over water for the next 24 h)",
+        "feature_cols": list(feature_cols),
+        "risk_bands": metrics["risk_bands"],
+        "thresholds_cal": metrics["risk_bands"]["edges"],
+        "calibration_years": metrics["split"]["val_years"],
+        "n_rounds": metrics["n_rounds"],
+        "n_jobs": metrics["n_jobs"],
+        "library_versions": {
+            "python": platform.python_version(),
+            "xgboost": xgb.__version__,
+            "scikit-learn": sklearn.__version__,
+            "pandas": pd.__version__,
+            "numpy": np.__version__,
+        },
+        "data_sha256": hashlib.sha256(data_path.read_bytes()).hexdigest() if data_path.exists() else None,
+    }
+    with open(artifacts_dir / settings.MODEL_META_FILE, "w") as f:
+        json.dump(meta, f, indent=2)
 
     # Plot and save calibration curve
     plot_calibration(test_set["RI"], eval_result["y_prob_cal"], artifacts_dir / settings.CALIBRATION_PLOT_FILE)
@@ -365,6 +474,19 @@ def load_model(artifacts_dir=settings.ARTIFACTS_DIR):
             f"do not match config FEATURE_COLS {settings.FEATURE_COLS}"
         )
     return model, calibrator, feature_cols
+
+
+def load_meta(artifacts_dir=settings.ARTIFACTS_DIR):
+    # Risk bands, thresholds and provenance saved with the model
+    with open(Path(artifacts_dir) / settings.MODEL_META_FILE) as f:
+        meta = json.load(f)
+    if meta["model_version"] != settings.MODEL_VERSION:
+        raise ValueError(f"Model meta is for {meta['model_version']}, config is {settings.MODEL_VERSION}")
+    if meta["feature_cols"] != settings.FEATURE_COLS:
+        raise ValueError(
+            f"Model meta feature list {meta['feature_cols']} does not match config FEATURE_COLS {settings.FEATURE_COLS}"
+        )
+    return meta
 
 
 def validate_features(X, feature_cols=settings.FEATURE_COLS):
@@ -406,7 +528,7 @@ def predict(X, model=None, calibrator=None):
         saved_model, saved_calibrator, _ = load_model()
         model = saved_model if model is None else model
         calibrator = saved_calibrator if calibrator is None else calibrator
-    raw = model.predict_proba(X)[:, 1]
+    raw = model.predict_proba(X)[:, 1].astype(np.float64)
     return calibrator.predict_proba(raw.reshape(-1, 1))[:, 1]
 
 
@@ -416,9 +538,11 @@ def main():
     model, scale_pos_weight, cv_info = train_model(training_set)
     calibrator = calibrate(model, validation_set)
     bands = risk_bands(validation_set, predict(validation_set[settings.FEATURE_COLS], model, calibrator))
+    calibration_years = evaluate_calibration_years(model, calibrator, validation_set)
     # Test is used once, here
     eval_result = evaluate(model, test_set, calibrator, bands)
-    metrics = build_metrics(training_set, validation_set, test_set, scale_pos_weight, cv_info, bands, eval_result)
+    metrics = build_metrics(training_set, validation_set, test_set, scale_pos_weight, cv_info, bands, eval_result,
+                            calibration_years=calibration_years)
     save_artifacts(model, calibrator, settings.FEATURE_COLS, test_set, eval_result, metrics)
 
     # Compute SHAP

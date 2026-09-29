@@ -1,6 +1,6 @@
 """Single source of settings for training, evaluation and saved artifacts.
 
-Values are the v1 settings. Changing any of them changes results.
+Values are the v2 settings (AUDIT.md §8 session 6). Changing any of them changes results.
 """
 from pathlib import Path
 
@@ -12,7 +12,7 @@ ARTIFACTS_DIR = ROOT / "artifacts"
 RESULTS_DIR = ROOT / "results"
 
 # Artifact names
-MODEL_VERSION = "v1"
+MODEL_VERSION = "v2"
 MODEL_NAME = f"xgb_ri_{MODEL_VERSION}"
 MODEL_FILE = f"{MODEL_NAME}.joblib"
 FEATURE_COLS_FILE = f"feature_cols_{MODEL_VERSION}.joblib"
@@ -21,6 +21,10 @@ TEST_PREDICTIONS_FILE = f"test_predictions_{MODEL_VERSION}.csv"
 CALIBRATION_PLOT_FILE = f"calibration_{MODEL_VERSION}.png"
 FEATURE_IMPORTANCE_FILE = f"feature_importance_{MODEL_VERSION}.csv"
 METRICS_FILE = f"metrics_{MODEL_VERSION}.json"
+SHAP_IMPORTANCE_FILE = f"shap_importance_{MODEL_VERSION}.csv"
+SHAP_SUMMARY_FILE = f"shap_summary_{MODEL_VERSION}.png"
+# Risk bands, thresholds and provenance saved next to the model for the app
+MODEL_META_FILE = f"model_meta_{MODEL_VERSION}.json"
 
 # Model features, in the order the model was trained on
 FEATURE_COLS = [

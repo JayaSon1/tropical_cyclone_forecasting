@@ -12,6 +12,8 @@ import pytest
 import xgboost as xgb
 from PIL import Image
 
+from config import settings
+
 # Plots must not come out blank (AUDIT.md §2.5 Check L, §6 decision 8).
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -51,14 +53,26 @@ def test_shap_summary_not_blank(tmp_path, monkeypatch, interactive_show):
     model = xgb.XGBClassifier(n_estimators=5, max_depth=2, n_jobs=1, random_state=0)
     model.fit(X, y)
 
-    # explain() writes to relative artifacts/ paths; keep the real artifacts untouched.
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / "artifacts").mkdir()
-    explain(model, X, cols)
+    # The output folder is an argument; it is created only when a plot is saved.
+    out_dir = tmp_path / "out"
+    explain(model, X, cols, artifacts_dir=out_dir)
 
-    out = tmp_path / "artifacts" / "shap_summary_v1.png"
+    out = out_dir / settings.SHAP_SUMMARY_FILE
     assert out.exists()
     assert grey_levels(out) > 1
+    assert (out_dir / settings.SHAP_IMPORTANCE_FILE).exists()
+
+
+def test_importing_shap_module_creates_no_folders(tmp_path):
+    env = {k: v for k, v in os.environ.items() if k != "MPLBACKEND"}
+    env["PYTHONPATH"] = str(ROOT)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    result = subprocess.run(
+        [sys.executable, "-c", "import explainability.compute_shap"],
+        cwd=tmp_path, env=env, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_scripts_force_agg(tmp_path):

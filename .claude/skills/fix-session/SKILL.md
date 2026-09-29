@@ -16,6 +16,9 @@ Run fix session $ARGUMENTS from AUDIT.md section 8.
 ## 2. Tests first
 - Write the tests. Run them and SHOW me they fail on the current code
   (or explain why a test legitimately passes already).
+- During steps 2-3, loop with the fast suite (skips bootstrap-heavy tests):
+  PYTHONDONTWRITEBYTECODE=1 hurricane-env/Scripts/python.exe -m pytest tests -q -p no:cacheprovider -m "not slow"
+  If a new test is itself marked slow, run it by name to show it fail and pass.
 
 ## 3. Smallest change
 - Make the smallest change that makes the tests pass.
@@ -24,10 +27,10 @@ Run fix session $ARGUMENTS from AUDIT.md section 8.
 - If a decision is needed that AUDIT.md doesn't cover, STOP and ask.
 
 ## 4. Verify
-- Run the full suite:
+- Run the full suite, including slow tests:
   PYTHONDONTWRITEBYTECODE=1 hurricane-env/Scripts/python.exe -m pytest tests -q -p no:cacheprovider
   and show the output.
-- The v1 golden test must still pass unless this session is the retrain.
+- The golden-metrics test must still pass (re-baselining needs my approval).
 - Confirm nothing in artifacts/ or results/ was written (show modification
   dates) unless this session is the retrain.
 - Group any NEW warnings by source; flag any from our own code.

@@ -1,3 +1,4 @@
+import hashlib
 import json
 
 import numpy as np
@@ -5,6 +6,7 @@ import pandas as pd
 import pytest
 import xgboost as xgb
 from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import average_precision_score, brier_score_loss
 
 from config import settings
 from src.models import xgboost_model as xm
@@ -40,12 +42,16 @@ def splits():
 
 @pytest.fixture(scope="module")
 def fitted(splits):
-    train, cal, test = splits
-    model, spw, cv_info = xm.train_model(train, params=SMALL)
-    calibrator = xm.calibrate(model, cal)
-    bands = xm.risk_bands(cal)
-    result = xm.evaluate(model, test, calibrator, bands)
-    return model, spw, cv_info, calibrator, bands, result
+    # A smaller config bootstrap keeps the fast test loop fast. It stays in effect while the
+    # fixture is alive, so tests that compare against settings.BOOTSTRAP_N see the value used.
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(settings, "BOOTSTRAP_N", 200)
+        train, cal, test = splits
+        model, spw, cv_info = xm.train_model(train, params=SMALL)
+        calibrator = xm.calibrate(model, cal)
+        bands = xm.risk_bands(cal)
+        result = xm.evaluate(model, test, calibrator, bands)
+        yield model, spw, cv_info, calibrator, bands, result
 
 
 def years_of(splits, index):
@@ -288,3 +294,139 @@ def test_band_rule_from_config_records_both_rates(splits, fitted, monkeypatch):
     monkeypatch.setattr(settings, "BAND_BASE_RATE", "median")
     with pytest.raises(ValueError, match="BAND_BASE_RATE"):
         xm.risk_bands(cal, cal_prob)
+
+
+# ---------- baselines on the same resamples (AUDIT.md §8 session 6 evaluation plan) ----------
+
+@pytest.mark.slow
+def test_baseline_comparison_uses_the_same_resamples(splits, fitted):
+    test, (bands, result) = splits[2], fitted[4:]
+    y, p = test["RI"].to_numpy(), result["y_prob_cal"]
+    persist = (test["delta_vmax_12h"] > 0).astype(float).to_numpy()
+    cmp = xm.baseline_comparison(test["storm_id"], y, p, persist, bands["observed_rate"],
+                                 n_boot=300, seed=3, level=0.9)
+    auc = cmp["pr_auc"]
+    assert cmp["bootstrap"] == {"level": 0.9, "n_boot": 300, "n_valid": len(auc["model"]["samples"]), "seed": 3}
+    assert (cmp["n_rows"], cmp["n_pos"]) == (len(y), int(y.sum()))
+
+    # The difference is taken resample by resample, so the resamples are shared
+    np.testing.assert_array_equal(auc["model_minus_persistence"]["samples"],
+                                  auc["model"]["samples"] - auc["persistence"]["samples"])
+    # Same resamples as the headline CI
+    ci = xm.bootstrap_pr_auc_ci(test["storm_id"], y, p, n_boot=300, seed=3, level=0.9)
+    np.testing.assert_array_equal(auc["model"]["samples"], ci["samples"])
+    assert (auc["model"]["lower"], auc["model"]["upper"]) == (ci["lower"], ci["upper"])
+
+    # Climatology is a constant score: its PR-AUC is the positive rate of each resample
+    usable = [rows for rows in xm.storm_resamples(test["storm_id"], 300, 3) if y[rows].any()]
+    np.testing.assert_allclose(auc["climatology"]["samples"], [y[rows].mean() for rows in usable])
+    assert auc["climatology"]["point"] == pytest.approx(y.mean())
+    assert auc["persistence"]["point"] == pytest.approx(average_precision_score(y, persist))
+
+
+@pytest.mark.slow
+def test_brier_skill_uses_calibration_year_rate_not_test_rate(splits, fitted):
+    test, (bands, result) = splits[2], fitted[4:]
+    y, p = test["RI"].to_numpy(), result["y_prob_cal"]
+    persist = (test["delta_vmax_12h"] > 0).astype(float).to_numpy()
+    rate = bands["observed_rate"]
+    assert rate != pytest.approx(y.mean())   # the synthetic 2016-19 and test rates differ
+    cmp = xm.baseline_comparison(test["storm_id"], y, p, persist, rate, n_boot=300, seed=3, level=0.9)
+    brier_clim = brier_score_loss(y, np.full(len(y), rate))
+    assert cmp["climatology_rate"] == rate
+    assert cmp["brier"]["model"] == pytest.approx(brier_score_loss(y, p))
+    assert cmp["brier"]["climatology"] == pytest.approx(brier_clim)
+    assert cmp["brier_skill_score"]["point"] == pytest.approx(1 - brier_score_loss(y, p) / brier_clim)
+    bss = cmp["brier_skill_score"]
+    assert bss["lower"] <= bss["upper"] and len(bss["samples"]) == cmp["bootstrap"]["n_valid"]
+
+
+def test_evaluate_reports_baselines_with_config_bootstrap(splits, fitted):
+    test, (bands, result) = splits[2], fitted[4:]
+    base = result["baselines"]
+    assert base["climatology_rate"] == bands["observed_rate"]
+    assert base["bootstrap"]["seed"] == settings.BOOTSTRAP_SEED
+    assert base["bootstrap"]["n_boot"] == settings.BOOTSTRAP_N
+    assert base["pr_auc"]["model"]["lower"] == result["pr_auc_ci"]["lower"]
+    assert base["pr_auc"]["model"]["upper"] == result["pr_auc_ci"]["upper"]
+    assert base["pr_auc"]["persistence"]["point"] == pytest.approx(result["pr_auc_persistence"])
+
+
+def test_metrics_have_baselines_and_optimistic_calibration_years(splits, fitted):
+    train, cal, test = splits
+    model, spw, cv_info, calibrator, bands, result = fitted
+    cal_years = xm.evaluate_calibration_years(model, calibrator, cal)
+    metrics = xm.build_metrics(train, cal, test, spw, cv_info, bands, result, calibration_years=cal_years)
+    saved = json.loads(json.dumps(metrics))
+
+    assert set(saved["baselines"]["pr_auc"]) == {"model", "persistence", "climatology", "model_minus_persistence"}
+    assert "samples" not in json.dumps(saved)
+    assert "brier_skill_score" in saved["baselines"]
+
+    block = saved["calibration_years"]
+    assert block["note"] == "used for calibration and band-setting: optimistic"
+    assert block["years"] == "2016-2019" and block["n_rows"] == len(cal)
+    raw = model.predict_proba(cal[FEATURES])[:, 1]
+    cal_prob = xm.predict(cal[FEATURES], model, calibrator)
+    assert block["pr_auc_raw"] == pytest.approx(average_precision_score(cal["RI"], raw))
+    assert block["pr_auc_cal"] == pytest.approx(average_precision_score(cal["RI"], cal_prob))
+    assert block["brier_cal"] == pytest.approx(brier_score_loss(cal["RI"], cal_prob))
+    with pytest.raises(ValueError, match="2016-2019"):
+        xm.evaluate_calibration_years(model, calibrator, test)
+
+
+# ---------- model meta saved next to the model (AUDIT.md §8 follow-up for session 6) ----------
+
+def test_save_artifacts_writes_model_meta(splits, fitted, tmp_path):
+    train, cal, test = splits
+    model, spw, cv_info, calibrator, bands, result = fitted
+    metrics = xm.build_metrics(train, cal, test, spw, cv_info, bands, result)
+    data = tmp_path / "data.parquet"
+    data.write_bytes(b"some bytes")
+    art, res = tmp_path / "a", tmp_path / "r"
+    xm.save_artifacts(model, calibrator, FEATURES, test, result, metrics,
+                      artifacts_dir=art, results_dir=res, data_path=data)
+
+    assert (art / settings.MODEL_META_FILE).exists()
+    meta = xm.load_meta(art)
+    assert meta["model_version"] == settings.MODEL_VERSION
+    assert meta["feature_cols"] == FEATURES
+    assert meta["risk_bands"]["edges"] == pytest.approx(bands["edges"])
+    assert meta["risk_bands"]["labels"] == bands["labels"]
+    assert meta["risk_bands"]["base_rate"] == pytest.approx(bands["base_rate"])
+    assert meta["thresholds_cal"] == pytest.approx(bands["edges"])
+    assert (meta["n_rounds"], meta["n_jobs"]) == (cv_info["n_rounds"], settings.N_JOBS)
+    assert meta["calibration_years"] == "2016-2019"
+    assert meta["data_sha256"] == hashlib.sha256(b"some bytes").hexdigest()
+    assert meta["library_versions"]["xgboost"] == xgb.__version__
+
+    meta["feature_cols"] = FEATURES[::-1]
+    (art / settings.MODEL_META_FILE).write_text(json.dumps(meta))
+    with pytest.raises(ValueError, match="feature"):
+        xm.load_meta(art)
+
+
+def test_saved_predictions_reproduce_brier_exactly(splits, fitted, tmp_path):
+    # Metrics are computed on float64 probabilities, which round-trip through the CSV exactly,
+    # so the golden test can recompute Brier from the saved predictions (float32 did not).
+    train, cal, test = splits
+    model, spw, cv_info, calibrator, bands, result = fitted
+    assert result["y_prob"].dtype == np.float64 and result["y_prob_cal"].dtype == np.float64
+    metrics = xm.build_metrics(train, cal, test, spw, cv_info, bands, result)
+    art, res = tmp_path / "a", tmp_path / "r"
+    xm.save_artifacts(model, calibrator, FEATURES, test, result, metrics, artifacts_dir=art, results_dir=res)
+    # pandas' default CSV float parser can be 1 ulp off; round_trip reads exactly what was written
+    written = pd.read_csv(art / settings.TEST_PREDICTIONS_FILE, float_precision="round_trip")
+    np.testing.assert_array_equal(written["y_prob"], result["y_prob"])
+    np.testing.assert_array_equal(written["y_prob_cal"], result["y_prob_cal"])
+    assert brier_score_loss(written["RI"], written["y_prob"]) == result["brier"]
+    assert brier_score_loss(written["RI"], written["y_prob_cal"]) == result["brier_cal"]
+
+
+def test_predict_matches_saved_calibrated_predictions_exactly(splits, fitted):
+    # predict() and evaluate() calibrate the same float64 raw probabilities
+    test = splits[2]
+    model, calibrator, result = fitted[0], fitted[3], fitted[5]
+    p = xm.predict(test[FEATURES], model, calibrator)
+    assert p.dtype == np.float64
+    np.testing.assert_array_equal(p, result["y_prob_cal"])
