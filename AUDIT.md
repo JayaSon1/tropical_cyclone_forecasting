@@ -327,6 +327,9 @@ Retraining happens only once, in session 6. Every session is test-first: write t
 | 5 | Training setup (#3, #6, #12, 12b) | **yes** (model) | Small synthetic data: the split has 1980 ≤ train ≤ 2015 and disjoint storms; CV folds never share a season; rounds = median best iteration; the calibrator, thresholds and bands see only 2016–19 rows; the config `n_jobs` is used and two fits are identical; the calibrated-prediction CSV is written; bootstrap CI is deterministic with a seed. **No full retrain.** |
 | 6 | Single retrain → v2 | — | Regenerate the data, v2 artifacts, metrics (raw + calibrated, CI) and SHAP. Re-baseline the golden test to v2 **with Jaya's approval**. Compare v1 vs v2 on validation; the test comparison is not like-for-like (§6). Update the README. |
 
+### Follow-ups
+- `compute_shap.explain` uses hard-coded `artifacts/` paths and creates `artifacts/` on import. Move the paths to `config/settings.py` and remove the import-time side effect (do with session 3 or before the app). *(Found in session 2.)*
+
 ---
 
 ## Appendix: re-runnable read-only checks

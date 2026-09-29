@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 import xgboost as xgb
-from sklearn.metrics import average_precision_score, precision_score, recall_score
+from sklearn.metrics import average_precision_score, precision_score, recall_score, brier_score_loss
 import joblib
 from pathlib import Path
 from sklearn.calibration import calibration_curve
@@ -11,12 +11,11 @@ import matplotlib.pyplot as plt
 import json
 import sys
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import average_precision_score, brier_score_loss
-from sklearn.calibration import calibration_curve
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.append(str(PROJECT_ROOT))
 
+from config import settings
 from explainability.compute_shap import explain
 
 def plot_calibration(y_true, y_prob, path):
@@ -32,22 +31,21 @@ def plot_calibration(y_true, y_prob, path):
     fig.savefig(path, dpi=150)
     plt.close(fig)
 
-if __name__ == "__main__":
-    
+
+def load_data(path=settings.PROCESSED_DATA_PATH):
     # Load the processed data
     print("Loading data...")
-    df = pd.read_parquet("data/processed/hurdat2_processed_observations.parquet")
+    return pd.read_parquet(path)
 
-    feature_cols = [
-        "vmax", "mslp",
-        "delta_vmax_6h", "delta_vmax_12h",
-        "latitude", "longitude",
-        "translation_speed",
-        "storm_age_hours",
-        "month",
-    ]
-    
-    # Create a temporal 
+
+def split_data(
+    df,
+    train_max_year=settings.TRAIN_MAX_YEAR,
+    val_min_year=settings.VAL_MIN_YEAR,
+    val_max_year=settings.VAL_MAX_YEAR,
+    test_min_year=settings.TEST_MIN_YEAR,
+):
+    # Create a temporal split
     # One year per storm = year of first observation (genesis)
     storm_year = (
         df.groupby("storm_id")["datetime"]
@@ -59,10 +57,10 @@ if __name__ == "__main__":
     df = df.merge(storm_year, left_on="storm_id", right_index=True)
 
     print("Creating temporal split...")
-    training_set = df[df["storm_year"] <= 2015]
-    validation_set = df[(df["storm_year"] >= 2016) & (df["storm_year"] <= 2019)]
-    test_set = df[df["storm_year"] >= 2020]
-    
+    training_set = df[df["storm_year"] <= train_max_year]
+    validation_set = df[(df["storm_year"] >= val_min_year) & (df["storm_year"] <= val_max_year)]
+    test_set = df[df["storm_year"] >= test_min_year]
+
     # Check that there are no storms that overlap in the training, validation and testing sets
     train_ids = set(training_set["storm_id"])
     val_ids   = set(validation_set["storm_id"])
@@ -71,39 +69,35 @@ if __name__ == "__main__":
     print("Train and Val :", len(train_ids & val_ids))   # must be 0
     print("Train and Test:", len(train_ids & test_ids))  # must be 0
     print("Val and Test  :", len(val_ids & test_ids))    # must be 0
-        
+
     print(f"Training: {len(training_set)} | Validation: {len(validation_set)} | Test: {len(test_set)}")
     print("Training RI rate:", training_set["RI"].mean().round(3))
     print("Validation RI rate:", validation_set["RI"].mean().round(3))
     print("Test RI rate:", test_set["RI"].mean().round(3))
-        
-    # Split into data and labels
+
+    return training_set, validation_set, test_set
+
+
+def train_model(
+    training_set,
+    validation_set,
+    feature_cols=settings.FEATURE_COLS,
+    params=settings.XGB_PARAMS,
+    n_jobs=settings.N_JOBS,
+):
     X_train, y_train = training_set[feature_cols], training_set["RI"]
     X_validation, y_validation = validation_set[feature_cols], validation_set["RI"]
-    X_test, y_test = test_set[feature_cols], test_set["RI"]
-    
+
     # Calculate scaling factor for class imbalance
     print("Computing class imbalance scaling factor...")
     n_pos = y_train.sum()
     n_neg = len(y_train) - n_pos
     scale_pos_weight = n_neg / n_pos
     print(f"scale_pos_weight = {scale_pos_weight:.1f}")
-    
+
     # Train the model
     print("Training model...")
-    model = xgb.XGBClassifier(
-        objective="binary:logistic",
-        eval_metric="aucpr",
-        scale_pos_weight=scale_pos_weight,
-        n_estimators=500,
-        learning_rate=0.05,
-        max_depth=4,
-        subsample=0.8,
-        colsample_bytree=0.8,
-        early_stopping_rounds=30,
-        random_state=42,
-        n_jobs=-1,
-    )
+    model = xgb.XGBClassifier(**params, scale_pos_weight=scale_pos_weight, n_jobs=n_jobs)
 
     print("Fitting model...")
     model.fit(
@@ -111,49 +105,48 @@ if __name__ == "__main__":
         eval_set=[(X_validation, y_validation)],
         verbose=50,
     )
-    
+
+    return model, scale_pos_weight
+
+
+def calibrate(model, validation_set, feature_cols=settings.FEATURE_COLS):
+    # The imbalance scale factor usually pushes scores in a smooth way so Platt scaling can fix this
+    validation_prob = model.predict_proba(validation_set[feature_cols])[:, 1].reshape(-1, 1)
+
+    platt = LogisticRegression()
+    platt.fit(validation_prob, validation_set["RI"])
+    return platt
+
+
+def evaluate(model, test_set, feature_cols=settings.FEATURE_COLS, thresholds=settings.THRESHOLDS, calibrator=None):
+    X_test, y_test = test_set[feature_cols], test_set["RI"]
+
     # Evaluate performance
     print("Evaluate model...")
     y_prob = model.predict_proba(X_test)[:, 1]
     pr_auc = average_precision_score(y_test, y_prob)
     print(f"Test PR-AUC: {pr_auc:.4f}")
-    
-    # Save predictions
-    pred_df = test_set[["storm_id", "name", "datetime", "RI"]].copy()
-    pred_df["y_prob"] = y_prob
-    pred_df.to_csv("artifacts/test_predictions_v1.csv", index=False)
-        
+
     threshold_metrics = {}
-    for threshold in [0.10, 0.20, 0.30, 0.50]:
-        
+    for threshold in thresholds:
+
         # If the predicted value is above the threshold, set to 1
         y_pred = (y_prob >= threshold).astype(int)
-        
+
         # Evaluation metrics
         precision = precision_score(y_test, y_pred, zero_division=0)
         recall  = recall_score(y_test, y_pred, zero_division=0)
-        
+
         threshold_metrics[str(threshold)] = {
             "precision": float(precision),
             "recall": float(recall),
             "n_predicted_positive": int(y_pred.sum()),
         }
-        
+
         print(f"Threshold {threshold:.2f} -> Precision {precision:.3f} | Recall {recall:.3f}")
 
-   
-    # Save artefacts
-    print("Saving model...")
-    Path("artifacts").mkdir(exist_ok=True)
-    
-    joblib.dump(model, "artifacts/xgb_ri_v1.joblib")
-    joblib.dump(feature_cols, "artifacts/feature_cols_v1.joblib")
-    
-    print("Model and feature list saved...")
-    
-    
     # Compare against trivial baselines
-    
+
     # Baseline A: always predict the training prevalence (or all zeros)
     pr_auc_majority = average_precision_score(y_test, np.zeros_like(y_test, dtype=float))
 
@@ -165,70 +158,130 @@ if __name__ == "__main__":
     print(f"Majority / all-zero PR-AUC: {pr_auc_majority:.4f}")
     print(f"Persistence PR-AUC: {pr_auc_persist:.4f}")
     print(f"XGBoost PR-AUC: {pr_auc:.4f}")
-            
-    # Calibration
-    # The imabalance scale factor usually pushes scores in a smooth way so Platt scaling can fix this
-    validation_prob  = model.predict_proba(X_validation)[:, 1].reshape(-1, 1)
-    test_prob = model.predict_proba(X_test)[:, 1].reshape(-1, 1)
 
-    platt = LogisticRegression()
-    platt.fit(validation_prob, y_validation)
+    result = {
+        "y_prob": y_prob,
+        "pr_auc": pr_auc,
+        "thresholds": threshold_metrics,
+        "pr_auc_majority": pr_auc_majority,
+        "pr_auc_persistence": pr_auc_persist,
+    }
 
-    val_cal  = platt.predict_proba(validation_prob)[:, 1]
-    test_cal = platt.predict_proba(test_prob)[:, 1]
+    if calibrator is not None:
+        test_cal = calibrator.predict_proba(y_prob.reshape(-1, 1))[:, 1]
 
-    print("PR-AUC raw / Platt:",
-        average_precision_score(y_test, test_prob),
-        average_precision_score(y_test, test_cal))
+        print("PR-AUC raw / Platt:",
+            average_precision_score(y_test, y_prob),
+            average_precision_score(y_test, test_cal))
 
-    print("Brier raw / Platt:",
-        brier_score_loss(y_test, test_prob.ravel()),
-        brier_score_loss(y_test, test_cal))
-    
-    # Save Platt calibrator
-    joblib.dump(platt, "artifacts/platt_calibrator_v1.joblib")
-    joblib.dump(feature_cols, "artifacts/feature_cols_v1.joblib")
+        print("Brier raw / Platt:",
+            brier_score_loss(y_test, y_prob),
+            brier_score_loss(y_test, test_cal))
 
-    # Plot and save calibration curve
-    plot_calibration(y_test, test_cal, "artifacts/calibration_v1.png")
-    
-    # Look at feature importance
-    feature_importance = (
-    pd.Series(model.feature_importances_, index=feature_cols, name="importance")
-      .sort_values(ascending=False)
-      .reset_index()
-      .rename(columns={"index": "feature"})
-)
-    
-    print("Feature Importance: ", feature_importance)
-    
-    # Save feature importance
-    feature_importance.to_csv("artifacts/feature_importance_v1.csv", index=False)
-    
-    # Save results
-    Path("results").mkdir(exist_ok=True)
-    
-    results = {
-        "model": "xgb_ri_v1",
-        "split": {"train_max_year": 2015, "val_years": "2016-2019", "test_min_year": 2020},
+        result["y_prob_cal"] = test_cal
+
+    return result
+
+
+def build_metrics(training_set, validation_set, test_set, scale_pos_weight, eval_result, feature_cols=settings.FEATURE_COLS):
+    return {
+        "model": settings.MODEL_NAME,
+        "split": {
+            "train_max_year": settings.TRAIN_MAX_YEAR,
+            "val_years": f"{settings.VAL_MIN_YEAR}-{settings.VAL_MAX_YEAR}",
+            "test_min_year": settings.TEST_MIN_YEAR,
+        },
         "n_train": int(len(training_set)),
         "n_val": int(len(validation_set)),
         "n_test": int(len(test_set)),
-        "ri_rate_train": float(y_train.mean()),
-        "ri_rate_val": float(y_validation.mean()),
-        "ri_rate_test": float(y_test.mean()),
+        "ri_rate_train": float(training_set["RI"].mean()),
+        "ri_rate_val": float(validation_set["RI"].mean()),
+        "ri_rate_test": float(test_set["RI"].mean()),
         "scale_pos_weight": float(scale_pos_weight),
-        "pr_auc_test": float(pr_auc),
-        "pr_auc_majority": float(pr_auc_majority),
-        "pr_auc_persistence": float(pr_auc_persist),
-        "thresholds": threshold_metrics,
+        "pr_auc_test": float(eval_result["pr_auc"]),
+        "pr_auc_majority": float(eval_result["pr_auc_majority"]),
+        "pr_auc_persistence": float(eval_result["pr_auc_persistence"]),
+        "thresholds": eval_result["thresholds"],
         "features": feature_cols,
     }
 
-    with open("results/metrics_v1.json", "w") as f:
-        json.dump(results, f, indent=2)
 
-    print("Saved artifacts/metrics_v1.json")
-    
+def save_artifacts(
+    model,
+    calibrator,
+    feature_cols,
+    test_set,
+    eval_result,
+    metrics,
+    artifacts_dir=settings.ARTIFACTS_DIR,
+    results_dir=settings.RESULTS_DIR,
+):
+    artifacts_dir, results_dir = Path(artifacts_dir), Path(results_dir)
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+
+    # Save predictions
+    pred_df = test_set[["storm_id", "name", "datetime", "RI"]].copy()
+    pred_df["y_prob"] = eval_result["y_prob"]
+    pred_df.to_csv(artifacts_dir / settings.TEST_PREDICTIONS_FILE, index=False)
+
+    # Save model, feature list and Platt calibrator
+    print("Saving model...")
+    joblib.dump(model, artifacts_dir / settings.MODEL_FILE)
+    joblib.dump(feature_cols, artifacts_dir / settings.FEATURE_COLS_FILE)
+    joblib.dump(calibrator, artifacts_dir / settings.CALIBRATOR_FILE)
+    print("Model, feature list and calibrator saved...")
+
+    # Plot and save calibration curve
+    plot_calibration(test_set["RI"], eval_result["y_prob_cal"], artifacts_dir / settings.CALIBRATION_PLOT_FILE)
+
+    # Look at feature importance
+    feature_importance = (
+        pd.Series(model.feature_importances_, index=feature_cols, name="importance")
+        .sort_values(ascending=False)
+        .reset_index()
+        .rename(columns={"index": "feature"})
+    )
+    print("Feature Importance: ", feature_importance)
+    feature_importance.to_csv(artifacts_dir / settings.FEATURE_IMPORTANCE_FILE, index=False)
+
+    # Save results
+    results_dir.mkdir(parents=True, exist_ok=True)
+    metrics_path = results_dir / settings.METRICS_FILE
+    with open(metrics_path, "w") as f:
+        json.dump(metrics, f, indent=2)
+    print(f"Saved {metrics_path}")
+
+
+def load_model(artifacts_dir=settings.ARTIFACTS_DIR):
+    artifacts_dir = Path(artifacts_dir)
+    model = joblib.load(artifacts_dir / settings.MODEL_FILE)
+    calibrator = joblib.load(artifacts_dir / settings.CALIBRATOR_FILE)
+    feature_cols = joblib.load(artifacts_dir / settings.FEATURE_COLS_FILE)
+    return model, calibrator, feature_cols
+
+
+def predict(X, model=None, calibrator=None):
+    # Returns calibrated P(RI). Loads the saved model and calibrator if not given.
+    if model is None or calibrator is None:
+        saved_model, saved_calibrator, _ = load_model()
+        model = saved_model if model is None else model
+        calibrator = saved_calibrator if calibrator is None else calibrator
+    raw = model.predict_proba(X)[:, 1]
+    return calibrator.predict_proba(raw.reshape(-1, 1))[:, 1]
+
+
+def main():
+    df = load_data()
+    training_set, validation_set, test_set = split_data(df)
+    model, scale_pos_weight = train_model(training_set, validation_set)
+    calibrator = calibrate(model, validation_set)
+    eval_result = evaluate(model, test_set, calibrator=calibrator)
+    metrics = build_metrics(training_set, validation_set, test_set, scale_pos_weight, eval_result)
+    save_artifacts(model, calibrator, settings.FEATURE_COLS, test_set, eval_result, metrics)
+
     # Compute SHAP
-    explain(model, X_test, feature_cols)
+    explain(model, test_set[settings.FEATURE_COLS], settings.FEATURE_COLS)
+
+
+if __name__ == "__main__":
+    main()
