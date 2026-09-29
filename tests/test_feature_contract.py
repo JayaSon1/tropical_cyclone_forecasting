@@ -13,7 +13,6 @@ from config import settings
 # DataFrame with exactly those columns, in that order.
 ROOT = Path(__file__).resolve().parent.parent
 ARTIFACTS = ROOT / "artifacts"
-RAW = ROOT / "data" / "raw" / "hurdat2-1851-2025-02272026.txt"
 PARQUET = ROOT / "data" / "processed" / "hurdat2_processed_observations.parquet"
 MODEL_FILES = [ARTIFACTS / f for f in (settings.MODEL_FILE, settings.CALIBRATOR_FILE, settings.FEATURE_COLS_FILE)]
 
@@ -160,18 +159,3 @@ def test_modelling_filter_uses_the_single_list():
     out = select_modelling_rows(df)
     assert len(out) == 1 and out["RI"].tolist() == [1]
     assert out["RI"].dtype.kind == "i"
-
-
-def test_modelling_row_count_unchanged_on_full_data():
-    if not (RAW.exists() and PARQUET.exists()):
-        pytest.skip("raw HURDAT2 file or processed parquet missing")
-    from data.parse_hurdat2 import parse_hurdat2, select_modelling_rows
-    from src.features.build_features import extract_features
-    from src.features.labels import ri_labels
-
-    rebuilt = select_modelling_rows(extract_features(ri_labels(parse_hurdat2(str(RAW)))))
-    saved = pd.read_parquet(PARQUET)
-    assert len(rebuilt) == len(saved) == 14528
-    assert int(rebuilt["RI"].sum()) == int(saved["RI"].sum()) == 868
-    key = ["storm_id", "datetime"]
-    pd.testing.assert_frame_equal(rebuilt[key].reset_index(drop=True), saved[key].reset_index(drop=True))

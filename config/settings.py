@@ -32,6 +32,9 @@ FEATURE_COLS = [
     "month",
 ]
 
+# Statuses that count as a tropical cyclone, required at t and at t+24 (AUDIT.md §6 decision 4)
+TROPICAL_STATUSES = ["TD", "TS", "HU", "SD", "SS"]
+
 # Split by storm genesis year
 TRAIN_MAX_YEAR = 2015
 VAL_MIN_YEAR = 2016
