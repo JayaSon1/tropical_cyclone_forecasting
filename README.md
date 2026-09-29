@@ -16,11 +16,27 @@ PYTHONDONTWRITEBYTECODE=1 hurricane-env/Scripts/python.exe src/models/xgboost_mo
 PYTHONDONTWRITEBYTECODE=1 hurricane-env/Scripts/python.exe -m pytest tests -q -p no:cacheprovider
 ```
 
-- **Data files are not tracked.** On a fresh clone, run `python -m data.parse_hurdat2` first. It reads the tracked raw file `data/raw/hurdat2-1851-2025-02272026.txt` and regenerates `data/processed/hurdat2_raw.parquet` and `data/processed/hurdat2_processed_observations.parquet` (paths in `config/settings.py`). Until then, the golden-metrics and model tests skip.
+- **Data files are not tracked.** Regenerate them first, see [Regenerating the data](#regenerating-the-data).
 - **Outputs:**
   - `artifacts/`: `xgb_ri_v2.joblib`, `platt_calibrator_v2.joblib`, `feature_cols_v2.joblib`, `model_meta_v2.json` (risk bands, thresholds, library versions, data hash), `test_predictions_v2.csv` (raw and calibrated), plots, SHAP.
   - `results/metrics_v2.json`: all metrics.
 - **Scoring:** `src.models.xgboost_model.predict(X)` returns calibrated P(RI) for a DataFrame with exactly the columns in `config.settings.FEATURE_COLS`, in that order.
+
+## Regenerating the data
+The processed parquet files are not in the repo. The raw HURDAT2 file is, so rebuild them from the repo root with the project venv. The system Python has no pytest or joblib.
+```
+PYTHONDONTWRITEBYTECODE=1 hurricane-env/Scripts/python.exe -m data.parse_hurdat2
+```
+Use `-m`, so the `src.*` and `config` imports resolve. The script:
+1. reads `data/raw/hurdat2-1851-2025-02272026.txt` (tracked)
+2. writes `data/processed/hurdat2_raw.parquet`, every parsed record
+3. labels RI, builds the features and applies the scope filters
+4. writes `data/processed/hurdat2_processed_observations.parquet`, the modelling table
+
+All paths come from `config/settings.py` (`RAW_HURDAT2_PATH`, `RAW_PARQUET_PATH`, `PROCESSED_DATA_PATH`).
+
+- **Check:** the script prints `Final modelling table shape: (12941, 25)` and an RI rate of 0.066. The SHA-256 of the modelling table should equal `data_sha256` in `artifacts/model_meta_v2.json`.
+- **Without it:** you can still load the model and run `predict()`, because the v2 model files are tracked. The golden-metrics and feature-contract tests skip until the parquet exists.
 
 ## Setup (v2)
 - **Data:** synoptic times only (00/06/12/18 UTC). t+24 h and the 6 h / 12 h lags are exact timestamp matches within a storm.
