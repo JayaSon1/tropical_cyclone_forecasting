@@ -2,6 +2,8 @@ import pandas as pd
 import numpy as np
 from math import radians, sin, cos, sqrt, atan2
 
+from src.features.time_utils import value_at
+
 # BASELINE FEATURES
 # vmax
 # mslp
@@ -36,16 +38,16 @@ def point_distance_km(latitude_1, longitude_1, latitude_2, longitude_2):
 def extract_features(df):
     df = df.sort_values(["storm_id", "datetime"]).copy()
 
-    # Persistence features
-    df["vmax_prev_6h"]  = df.groupby("storm_id")["vmax"].shift(1)
-    df["vmax_prev_12h"] = df.groupby("storm_id")["vmax"].shift(2)
+    # Persistence features: vmax at exactly t-6 h / t-12 h in the same storm (NaN if no record)
+    df["vmax_prev_6h"]  = pd.to_numeric(value_at(df, -6, "vmax"))
+    df["vmax_prev_12h"] = pd.to_numeric(value_at(df, -12, "vmax"))
 
     df["delta_vmax_6h"]  = df["vmax"] - df["vmax_prev_6h"]
     df["delta_vmax_12h"] = df["vmax"] - df["vmax_prev_12h"]
 
-    # Translation speed (km/h) 
-    df["lat_prev"] = df.groupby("storm_id")["latitude"].shift(1)
-    df["lon_prev"] = df.groupby("storm_id")["longitude"].shift(1)
+    # Translation speed (km/h) from the position at exactly t-6 h
+    df["lat_prev"] = pd.to_numeric(value_at(df, -6, "latitude"))
+    df["lon_prev"] = pd.to_numeric(value_at(df, -6, "longitude"))
 
     df["translation_speed"] = df.apply(
         lambda r: point_distance_km(r["lat_prev"], r["lon_prev"], r["latitude"], r["longitude"]) / 6.0

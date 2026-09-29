@@ -215,6 +215,7 @@ The model predicts **the probability of RI (≥30 kt increase in 24 h) given tha
 2. **Feature order (risk 2):** one feature list, defined in one place and saved with the model.
    - `predict()` accepts only a pandas DataFrame and validates column names and order. A wrong order or a missing column raises a clear error.
    - Remove the duplicate list at `parse_hurdat2.py:166–177`.
+   - *Implementation note (session 3):* `predict()` also rejects boolean or non-numeric columns and any NaN in a feature, naming the column(s) and the row count. The model was trained only on complete rows. A storm's first rows have no 6 h / 12 h lag, and some rows have no `mslp`. **For such rows the app must show "no forecast available" and must not call `predict()`.**
 3. **Determinism (risk 6):** pin `n_jobs` to a fixed value stored in one config location, and document it.
 4. **Non-tropical at t+24 (risk 3):** exclude rows whose t+24 status is not TD/TS/HU/SD/SS, e.g. EX, LO, WV, DB. This enforces the scope above.
 5. **Landfall (risk 4):** keep the landfall exclusion as a scope filter and document that it uses future information.
@@ -245,6 +246,8 @@ The model predicts **the probability of RI (≥30 kt increase in 24 h) given tha
     - This replaces decision 7's 2016–17 / 2018–19 split, which Check A showed leaves only 31 RI positives for calibration.
 
 ### Reporting rule for v1 vs v2
+> **Superseded (session 6, Jaya's decision):** there is no v1-vs-v2 comparison. v2 is evaluated against baselines, see the [session 6 evaluation plan](#session-6-evaluation-plan).
+
 v1 and v2 test metrics are **not like-for-like**: the time base and the scope filters change which test rows exist. The final comparison and the README must state this. Compare on validation where possible, and explain the difference.
 
 ---
@@ -319,13 +322,53 @@ Retraining happens only once, in session 6. Every session is test-first: write t
 
 | # | Session | Changes results? | Test-first plan |
 |---|---|---|---|
-| 0 | v1 golden-metrics safety net | no | Recompute from the v1 artifacts and match `metrics_v1.json` (Check F logic). It must pass before session 1 and keep passing until session 6 deliberately re-baselines it. |
-| 1 | Hygiene + Irene fixture + plots (#8, #9, #10) | no | The Irene test points at the tracked `tests/fixtures/` file; it fails because the file is missing → add the fixture, `git rm --cached` the `.pyc` files, fix `.gitignore`. The plot helper under Agg writes a PNG with more than one grey level; it fails today. |
-| 2 | Importable refactor + config (#11) | no | A parity test: `load → split → train → evaluate` through the new functions, with v1 settings (`n_jobs=-1`), reproduces v1 test PR-AUC 0.385453 in memory. It fails on import → refactor. |
-| 3 | Feature contract (#2) | no | `predict()` raises on a reordered DataFrame, a missing column or a numpy array. The saved feature list equals the config list. Modelling row count is unchanged after removing the duplicate list. |
-| 4 | Label scope (#1, #4, #5) | **yes** (data) | Synthetic storms: an off-synoptic `L` record inside the window; a missing synoptic step (no t+24 → NA); exact 6/12 h lags and speed Δt; EX/LO at t+24 → NA; `L` in [t, t+24 h] → excluded; +29/+30 kt boundary. |
-| 5 | Training setup (#3, #6, #12, 12b) | **yes** (model) | Small synthetic data: the split has 1980 ≤ train ≤ 2015 and disjoint storms; CV folds never share a season; rounds = median best iteration; the calibrator, thresholds and bands see only 2016–19 rows; the config `n_jobs` is used and two fits are identical; the calibrated-prediction CSV is written; bootstrap CI is deterministic with a seed. **No full retrain.** |
-| 6 | Single retrain → v2 | — | Regenerate the data, v2 artifacts, metrics (raw + calibrated, CI) and SHAP. Re-baseline the golden test to v2 **with Jaya's approval**. Compare v1 vs v2 on validation; the test comparison is not like-for-like (§6). Update the README. |
+| 0 | v1 golden-metrics safety net — **done 2026-09-29** (`ebd5d440`) | no | Recompute from the v1 artifacts and match `metrics_v1.json` (Check F logic). It must pass before session 1 and keep passing until session 6 deliberately re-baselines it. |
+| 1 | Hygiene + Irene fixture + plots (#8, #9, #10) — **done 2026-09-29** (`b348acd9`) | no | The Irene test points at the tracked `tests/fixtures/` file; it fails because the file is missing → add the fixture, `git rm --cached` the `.pyc` files, fix `.gitignore`. The plot helper under Agg writes a PNG with more than one grey level; it fails today. |
+| 2 | Importable refactor + config (#11) — **done 2026-09-29** (`7e239242`) | no | A parity test: `load → split → train → evaluate` through the new functions, with v1 settings (`n_jobs=-1`), reproduces v1 test PR-AUC 0.385453 in memory. It fails on import → refactor. |
+| 3 | Feature contract (#2) — **done 2026-09-29** (`3db0406b`) | no | `predict()` raises on a reordered DataFrame, a missing column or a numpy array. The saved feature list equals the config list. Modelling row count is unchanged after removing the duplicate list. |
+| 4 | Label scope (#1, #4, #5) — **done 2026-09-29** (`31cc57cd`) | **yes** (data) | Synthetic storms: an off-synoptic `L` record inside the window; a missing synoptic step (no t+24 → NA); exact 6/12 h lags and speed Δt; EX/LO at t+24 → NA; `L` in [t, t+24 h] → excluded; +29/+30 kt boundary. *Done:* the rebuild from raw gives 12,941 rows / 858 RI, matching Check A/B exactly. The saved parquet is still v1 until session 6. |
+| 5 | Training setup (#3, #6, #12, 12b) — **done 2026-09-29** | **yes** (model) | Small synthetic data: the split has 1980 ≤ train ≤ 2015 and disjoint storms; CV folds never share a season; rounds = median best iteration; the calibrator, thresholds and bands see only 2016–19 rows; the config `n_jobs` is used and two fits are identical; the calibrated-prediction CSV is written; bootstrap CI is deterministic with a seed. **No full retrain.** |
+| 6 | Single retrain → v2 — **done 2026-09-29** | **yes** (data, model, metrics) | Regenerate the data, v2 artifacts, metrics (raw + calibrated, CI) and SHAP. Replace the v1 golden test with a v2 golden test (**Jaya approved**). No v1-vs-v2 comparison: evaluate v2 against baselines per the [session 6 evaluation plan](#session-6-evaluation-plan). Save model meta (bands, thresholds) next to the model. Update the README. |
+
+**Parity tests retired (session 5, Jaya approved):** `tests/test_training_parity.py` (session 2) was deleted on purpose. Session 5 changes the training procedure: train 1980–2015, season-CV early stopping and a refit, `N_JOBS=1`, calibrated metrics. v1 can therefore no longer be reproduced through the default code path. The v1 golden test and `test_feature_contract`'s fixed-row `predict()` parity stay as the v1 safety net until session 6. Session 6's v1-vs-v2 comparison table replaces the parity tests.
+
+### Session 6 evaluation plan
+Written 2026-09-29, before any v2 number was computed (Jaya's decision). v1 is **not** a baseline: it had leakage, a wrong t+24 label time base and calibration on its early-stopping set. Its metrics are superseded and preserved only at the `pre-fixes` tag.
+
+**Primary: test (storm genesis ≥ 2020), used once.** State n rows and n RI positives.
+- v2 PR-AUC on calibrated P(RI), with a storm-bootstrap 95% CI.
+- Persistence baseline (`delta_vmax_12h > 0`): PR-AUC with a CI.
+- Climatology baseline (a constant score, so PR-AUC = the positive rate): PR-AUC with a CI.
+- All three use the same rows and the **same storm resamples** (seed and n from config).
+- Paired bootstrap CI for PR-AUC(v2) − PR-AUC(persistence).
+- Brier: v2 calibrated vs climatology, plus the Brier skill score (BSS = 1 − Brier_v2 / Brier_clim) with a CI. The climatology forecast is the **2016–19 observed RI rate** (the band base rate), not the test rate, so nothing is tuned on test.
+- Raw (uncalibrated) PR-AUC and Brier alongside.
+
+**Secondary: 2016–19.** PR-AUC and Brier, labelled "used for calibration and band-setting: optimistic".
+
+### Session 6 results (v2, 2026-09-29)
+- **Data:** 12,941 rows / 858 RI. The split has train 7,684; calibration 1,088 (88 RI); test 1,516 (114 RI), matching Check A.
+- **Boosting rounds:** CV fold rounds 44 / 61 / 93 / 10 / 167 → 61. The fold spread is wide.
+- **Test PR-AUC:** 0.398 (95% CI 0.248–0.539).
+  - Persistence: 0.138 (0.090–0.185).
+  - Climatology: 0.075 (0.051–0.100).
+  - Paired v2 − persistence: +0.260 (0.135–0.389).
+- **Brier:** 0.0603 calibrated (0.1692 raw) vs 0.0696 for climatology. BSS 0.134 (0.035–0.199).
+- **2016–19 (optimistic):** PR-AUC 0.333, Brier 0.064.
+- **Stored in:** `results/metrics_v2.json`, and `artifacts/model_meta_v2.json` for the bands and thresholds.
+- **Precision:** the saved predictions are float64, so the golden test recomputes every metric exactly. The first run saved float32 text and was off by about 2e-8 in Brier. It was re-run deterministically, giving an identical model and calibrator.
+
+**v1 is superseded.** The audit found three problems in v1:
+- the t+24 label and the lag features used row offsets on a series that isn't 6-hourly, so they were on the wrong time base (§2.1, §2.2)
+- scope filters that use future information, applied by row count and not documented (§2.1)
+- Platt calibration on the same years used for early stopping (§2.2)
+
+v1's metrics are not a baseline for v2. They are preserved only at the `pre-fixes` tag.
+
+### Follow-ups
+- `compute_shap.explain` uses hard-coded `artifacts/` paths and creates `artifacts/` on import. Move the paths to `config/settings.py` and remove the import-time side effect (do with session 3 or before the app). *(Found in session 2.)*
+- ~~**Session 6 task:** save risk bands and thresholds next to the model file.~~ Done in session 6: `model_meta_v2.json`, read with `load_meta()`.
+- ~~`compute_shap` paths / import side effect~~ Done in session 6: output folder is an argument (default from config); nothing is created on import.
 
 ---
 

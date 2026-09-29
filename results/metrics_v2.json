@@ -1,0 +1,140 @@
+{
+  "model": "xgb_ri_v2",
+  "split": {
+    "train_min_year": 1980,
+    "train_max_year": 2015,
+    "val_years": "2016-2019",
+    "test_min_year": 2020
+  },
+  "n_train": 7684,
+  "n_val": 1088,
+  "n_test": 1516,
+  "ri_rate_train": 0.06090577824049974,
+  "ri_rate_val": 0.08088235294117647,
+  "ri_rate_test": 0.07519788918205805,
+  "scale_pos_weight": 15.418803418803419,
+  "cv_folds": 5,
+  "fold_rounds": [
+    44,
+    61,
+    93,
+    10,
+    167
+  ],
+  "n_rounds": 61,
+  "n_jobs": 1,
+  "pr_auc_test_raw": 0.3982176920022723,
+  "pr_auc_test_cal": 0.3982176920022723,
+  "pr_auc_test_ci": {
+    "point": 0.3982176920022723,
+    "lower": 0.2481497782985246,
+    "upper": 0.5385825199064808,
+    "level": 0.95,
+    "n_boot": 2000,
+    "n_valid": 2000,
+    "seed": 42
+  },
+  "brier_test_raw": 0.16916419353324005,
+  "brier_test_cal": 0.06026475719032944,
+  "risk_bands": {
+    "base_rate_rule": "observed",
+    "base_rate": 0.08088235294117647,
+    "observed_rate": 0.08088235294117647,
+    "mean_calibrated_prob": 0.08080977075655185,
+    "multipliers": [
+      1,
+      2
+    ],
+    "edges": [
+      0.08088235294117647,
+      0.16176470588235295
+    ],
+    "labels": [
+      "Low",
+      "Elevated",
+      "High"
+    ]
+  },
+  "thresholds_cal": {
+    "0.080882": {
+      "precision": 0.15384615384615385,
+      "recall": 0.8596491228070176,
+      "n_predicted_positive": 637
+    },
+    "0.161765": {
+      "precision": 0.2323529411764706,
+      "recall": 0.6929824561403509,
+      "n_predicted_positive": 340
+    }
+  },
+  "band_counts_test": {
+    "Low": 879,
+    "Elevated": 297,
+    "High": 340
+  },
+  "pr_auc_majority": 0.07519788918205805,
+  "pr_auc_persistence": 0.13792006570787296,
+  "baselines": {
+    "n_rows": 1516,
+    "n_pos": 114,
+    "climatology_rate": 0.08088235294117647,
+    "bootstrap": {
+      "level": 0.95,
+      "n_boot": 2000,
+      "n_valid": 2000,
+      "seed": 42
+    },
+    "pr_auc": {
+      "model": {
+        "point": 0.3982176920022723,
+        "lower": 0.2481497782985246,
+        "upper": 0.5385825199064808
+      },
+      "persistence": {
+        "point": 0.13792006570787296,
+        "lower": 0.09034665399104631,
+        "upper": 0.18524735881843646
+      },
+      "climatology": {
+        "point": 0.07519788918205805,
+        "lower": 0.05102252878624693,
+        "upper": 0.10000148898153663
+      },
+      "model_minus_persistence": {
+        "point": 0.26029762629439934,
+        "lower": 0.13456997650099162,
+        "upper": 0.3889891230162351
+      }
+    },
+    "brier": {
+      "model": 0.06026475719032944,
+      "climatology": 0.06957547977284971
+    },
+    "brier_skill_score": {
+      "point": 0.133821895485564,
+      "lower": 0.035303473809456164,
+      "upper": 0.1990254617721573
+    }
+  },
+  "calibration_years": {
+    "note": "used for calibration and band-setting: optimistic",
+    "years": "2016-2019",
+    "n_rows": 1088,
+    "n_pos": 88,
+    "pr_auc_raw": 0.33344620279050696,
+    "pr_auc_cal": 0.33344620279050696,
+    "brier_raw": 0.13332296083187598,
+    "brier_cal": 0.06367543527089739
+  },
+  "features": [
+    "vmax",
+    "mslp",
+    "delta_vmax_6h",
+    "delta_vmax_12h",
+    "latitude",
+    "longitude",
+    "translation_speed",
+    "storm_age_hours",
+    "month"
+  ]
+}

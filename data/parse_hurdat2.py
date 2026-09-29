@@ -1,6 +1,7 @@
 import pandas as pd
 from pathlib import Path
 from datetime import datetime
+from config import settings
 from src.features.labels import ri_labels
 from src.features.build_features import extract_features
 
@@ -123,19 +124,29 @@ def parse_hurdat2(filepath):
     print("DataFrame created")
     df = pd.DataFrame(rows)
     df = df.sort_values(["storm_id", "datetime"]).reset_index(drop=True)
-    return df       
-            
-            
+    return df
 
-if __name__ == "__main__":
-    
+
+def select_modelling_rows(features_df, feature_cols=settings.FEATURE_COLS):
+    # Keep rows with a valid RI label and every model feature present
+    rows = features_df.dropna(subset=["RI"] + list(feature_cols)).copy()
+    rows["RI"] = rows["RI"].astype(int)
+    return rows
+
+
+
+def main():
+    # Input and output paths come from config, read at call time
+
     # Parse file
     print("Parsing HURCAT2 File")
-    df = parse_hurdat2("data/raw/hurdat2-1851-2025-02272026.txt")
-    
+    df = parse_hurdat2(settings.RAW_HURDAT2_PATH)
+
     # Save df
     print("Saving HURCAT2 File")
-    df.to_parquet("data/processed/hurdat2_raw.parquet", index=False)
+    raw_path = Path(settings.RAW_PARQUET_PATH)
+    raw_path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(raw_path, index=False)
     
     # Extract RI labelled observations
     df = ri_labels(df)
@@ -162,30 +173,16 @@ if __name__ == "__main__":
     # Assume `df` already has the RI label from the previous step
     features_df = extract_features(df)
 
-    # Columns you will actually use for the model
-    feature_cols = [
-        "vmax",
-        "mslp",
-        "delta_vmax_6h",
-        "delta_vmax_12h",
-        "latitude",
-        "longitude",
-        "translation_speed",
-        "storm_age_hours",
-        "month",
-        "day_of_year",
-    ]
-
-    # Keep only rows that have a valid RI label AND no missing features
-    processed_observations = features_df.dropna(subset=["RI"] + feature_cols).copy()
-    processed_observations["RI"] = processed_observations["RI"].astype(int)
+    # Keep only rows that have a valid RI label AND no missing model features
+    feature_cols = settings.FEATURE_COLS
+    processed_observations = select_modelling_rows(features_df)
 
     print("Final modelling table shape:", processed_observations.shape)
     print("Class balance:")
     print(processed_observations["RI"].value_counts(normalize=True).round(3))
     
     # Save processed observations
-    out_path = Path("data/processed/hurdat2_processed_observations.parquet")
+    out_path = Path(settings.PROCESSED_DATA_PATH)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     processed_observations.to_parquet(out_path, index=False)
@@ -197,3 +194,6 @@ if __name__ == "__main__":
     print(processed_observations[feature_cols + ["RI"]].isnull().sum())
     
     
+
+if __name__ == "__main__":
+    main()

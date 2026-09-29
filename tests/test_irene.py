@@ -5,7 +5,7 @@ import pandas as pd
 
 from data.parse_hurdat2 import parse_hurdat2
 
-TEST_FILE = Path("data/raw/test_irene_2011.txt")
+TEST_FILE = Path(__file__).parent / "fixtures" / "irene_2011.txt"
 
 def test_irene_basic_parsing():
     df = parse_hurdat2(TEST_FILE)
@@ -44,5 +44,5 @@ if __name__ == "__main__":
     # Use: python -m pytest tests/test_irene.py -v
     
     # Parse file
-    test_irene_basic_parsing
+    test_irene_basic_parsing()
     

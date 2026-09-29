@@ -19,3 +19,6 @@ __pycache__/
 artifacts/
 *.joblib
 *.pkl
+
+# Test fixtures are tracked despite the data ignores above
+!tests/fixtures/**
