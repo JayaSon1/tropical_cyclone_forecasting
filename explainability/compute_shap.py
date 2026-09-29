@@ -1,6 +1,8 @@
 import shap
 import numpy as np
 import pandas as pd
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from pathlib import Path
 
@@ -34,7 +36,6 @@ def explain(model, X_test, feature_cols):
         show=False,
     )
     plt.tight_layout()
-    plt.show()
     plt.savefig("artifacts/shap_summary_v1.png", dpi=150, bbox_inches="tight")
     plt.close()
     

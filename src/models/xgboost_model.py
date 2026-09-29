@@ -5,6 +5,8 @@ from sklearn.metrics import average_precision_score, precision_score, recall_sco
 import joblib
 from pathlib import Path
 from sklearn.calibration import calibration_curve
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import json
 import sys
@@ -16,6 +18,19 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.append(str(PROJECT_ROOT))
 
 from explainability.compute_shap import explain
+
+def plot_calibration(y_true, y_prob, path):
+    prob_true, prob_pred = calibration_curve(y_true, y_prob, n_bins=10, strategy="quantile")
+
+    fig, ax = plt.subplots()
+    ax.plot(prob_pred, prob_true, marker="o", label="Model")
+    ax.plot([0, 1], [0, 1], "--", label="Perfect")
+    ax.set_xlabel("Predicted probability")
+    ax.set_ylabel("Observed frequency")
+    ax.set_title("Calibration curve (test)")
+    ax.legend()
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
 
 if __name__ == "__main__":
     
@@ -174,19 +189,8 @@ if __name__ == "__main__":
     joblib.dump(platt, "artifacts/platt_calibrator_v1.joblib")
     joblib.dump(feature_cols, "artifacts/feature_cols_v1.joblib")
 
-    # Plot calibration curve
-    prob_true, prob_pred = calibration_curve(y_test, test_cal, n_bins=10, strategy="quantile")
-
-    plt.plot(prob_pred, prob_true, marker="o", label="Model")
-    plt.plot([0, 1], [0, 1], "--", label="Perfect")
-    plt.xlabel("Predicted probability")
-    plt.ylabel("Observed frequency")
-    plt.title("Calibration curve (test)")
-    plt.legend()
-    plt.show()
-    
-    # Save calibration plot
-    plt.savefig("artifacts/calibration_v1.png", dpi=150)
+    # Plot and save calibration curve
+    plot_calibration(y_test, test_cal, "artifacts/calibration_v1.png")
     
     # Look at feature importance
     feature_importance = (
