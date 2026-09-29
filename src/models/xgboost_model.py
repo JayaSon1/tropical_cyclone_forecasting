@@ -53,9 +53,9 @@ if __name__ == "__main__":
     val_ids   = set(validation_set["storm_id"])
     test_ids  = set(test_set["storm_id"])
 
-    print("Train ∩ Val :", len(train_ids & val_ids))   # must be 0
-    print("Train ∩ Test:", len(train_ids & test_ids))  # must be 0
-    print("Val ∩ Test  :", len(val_ids & test_ids))    # must be 0
+    print("Train and Val :", len(train_ids & val_ids))   # must be 0
+    print("Train and Test:", len(train_ids & test_ids))  # must be 0
+    print("Val and Test  :", len(val_ids & test_ids))    # must be 0
         
     print(f"Training: {len(training_set)} | Validation: {len(validation_set)} | Test: {len(test_set)}")
     print("Training RI rate:", training_set["RI"].mean().round(3))

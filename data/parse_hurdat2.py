@@ -1,3 +1,10 @@
+import pandas as pd
+from pathlib import Path
+from datetime import datetime
+from src.features.labels import ri_labels
+from src.features.build_features import extract_features
+
+
 # Turn the HURDAT2 (Atlantic) file into a clean pandas DataFrame with one row per 6-hour observation
 
 # --- Format ---
@@ -15,16 +22,6 @@
 # EX: Extratropical
 # SD, SS: Subtropical
 # LO, WV, DB: Other
-
-import pandas as pd
-from pathlib import Path
-from datetime import datetime
-from pathlib import Path
-
-from data.parse_hurdat2 import parse_hurdat2
-from src.features.labels import ri_labels
-from src.features.build_features import extract_features
-
 
 # Convert HURDAT2 numeric field, treating common missing codes as None
 def handle_none(value: str):

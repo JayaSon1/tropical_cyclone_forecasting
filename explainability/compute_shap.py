@@ -9,7 +9,7 @@ Path("artifacts").mkdir(exist_ok=True)
 def explain(model, X_test, feature_cols):
     # Explain log-odds (default, more stable than probabilities)
     explainer = shap.TreeExplainer(model)
-    X_explain = X_test  # or X_test.sample(500, random_state=42) if you want it faster
+    X_explain = X_test  
 
     shap_values = explainer.shap_values(X_explain)
     # For binary XGBClassifier this is a 2D array: (n_rows, n_features)

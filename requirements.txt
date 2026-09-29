@@ -13,3 +13,5 @@ tqdm
 python-dotenv
 pyarrow
 pytest
+flask
+gunicorn
