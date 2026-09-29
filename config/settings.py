@@ -7,6 +7,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 # Paths
+RAW_HURDAT2_PATH = ROOT / "data" / "raw" / "hurdat2-1851-2025-02272026.txt"
+RAW_PARQUET_PATH = ROOT / "data" / "processed" / "hurdat2_raw.parquet"
 PROCESSED_DATA_PATH = ROOT / "data" / "processed" / "hurdat2_processed_observations.parquet"
 ARTIFACTS_DIR = ROOT / "artifacts"
 RESULTS_DIR = ROOT / "results"

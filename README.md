@@ -16,6 +16,7 @@ PYTHONDONTWRITEBYTECODE=1 hurricane-env/Scripts/python.exe src/models/xgboost_mo
 PYTHONDONTWRITEBYTECODE=1 hurricane-env/Scripts/python.exe -m pytest tests -q -p no:cacheprovider
 ```
 
+- **Data files are not tracked.** On a fresh clone, run `python -m data.parse_hurdat2` first. It reads the tracked raw file `data/raw/hurdat2-1851-2025-02272026.txt` and regenerates `data/processed/hurdat2_raw.parquet` and `data/processed/hurdat2_processed_observations.parquet` (paths in `config/settings.py`). Until then, the golden-metrics and model tests skip.
 - **Outputs:**
   - `artifacts/`: `xgb_ri_v2.joblib`, `platt_calibrator_v2.joblib`, `feature_cols_v2.joblib`, `model_meta_v2.json` (risk bands, thresholds, library versions, data hash), `test_predictions_v2.csv` (raw and calibrated), plots, SHAP.
   - `results/metrics_v2.json`: all metrics.

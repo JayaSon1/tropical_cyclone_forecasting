@@ -135,15 +135,18 @@ def select_modelling_rows(features_df, feature_cols=settings.FEATURE_COLS):
 
 
 
-if __name__ == "__main__":
-    
+def main():
+    # Input and output paths come from config, read at call time
+
     # Parse file
     print("Parsing HURCAT2 File")
-    df = parse_hurdat2("data/raw/hurdat2-1851-2025-02272026.txt")
-    
+    df = parse_hurdat2(settings.RAW_HURDAT2_PATH)
+
     # Save df
     print("Saving HURCAT2 File")
-    df.to_parquet("data/processed/hurdat2_raw.parquet", index=False)
+    raw_path = Path(settings.RAW_PARQUET_PATH)
+    raw_path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(raw_path, index=False)
     
     # Extract RI labelled observations
     df = ri_labels(df)
@@ -179,7 +182,7 @@ if __name__ == "__main__":
     print(processed_observations["RI"].value_counts(normalize=True).round(3))
     
     # Save processed observations
-    out_path = Path("data/processed/hurdat2_processed_observations.parquet")
+    out_path = Path(settings.PROCESSED_DATA_PATH)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     processed_observations.to_parquet(out_path, index=False)
@@ -191,3 +194,6 @@ if __name__ == "__main__":
     print(processed_observations[feature_cols + ["RI"]].isnull().sum())
     
     
+
+if __name__ == "__main__":
+    main()
